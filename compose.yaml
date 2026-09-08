@@ -1,0 +1,20 @@
+services:
+  api:
+    build: ./backend
+    image: qut-competition-api:1.0.0
+    container_name: qut-competition-api
+    restart: unless-stopped
+    ports:
+      - "18086:8000"
+    volumes:
+      - qut-data:/data
+    environment:
+      DATABASE_PATH: /data/notices.db
+      TZ: Asia/Shanghai
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+volumes:
+  qut-data:

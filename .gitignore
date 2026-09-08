@@ -1,0 +1,34 @@
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+**/signing.properties
+**/local.properties
+*.jks
+*.keystore
+*.p12
+*.pfx
+signing-private/
+
+# Android / IDE generated files
+.idea/
+**/.gradle/
+**/build/
+.kotlin/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Python runtime and private data
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.db
+*.db-*
+*.sqlite*
+*.log
+data/
+
+# Public CA certificate and Gradle wrapper are intentional source assets.
