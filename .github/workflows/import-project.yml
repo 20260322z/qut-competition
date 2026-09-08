@@ -1,0 +1,49 @@
+name: Import verified project bundle
+on:
+  push:
+    paths:
+      - '.github/workflows/import-project.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and unpack the original source bundle
+        run: |
+          python - <<'PY'
+          import hashlib, pathlib, zipfile
+          archive = pathlib.Path('project-source.zip')
+          if not archive.exists():
+              print('Project already imported.')
+              raise SystemExit(0)
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == '7121b514219c90417a1f970fb82c77a645e6d26dcd8485464843443d9c3e154c'
+          root = pathlib.Path.cwd().resolve()
+          with zipfile.ZipFile(archive) as source:
+              files = [entry for entry in source.infolist() if not entry.is_dir()]
+              assert len(files) == 49
+              for entry in files:
+                  relative = pathlib.PurePosixPath(entry.filename.replace('\\', '/'))
+                  assert not relative.is_absolute() and '..' not in relative.parts
+                  assert '.git' not in relative.parts and '.github' not in relative.parts
+                  assert relative.name not in ('signing.properties', 'local.properties', '.env')
+                  assert relative.suffix not in ('.jks', '.keystore', '.p12', '.pfx')
+                  target = root.joinpath(*relative.parts)
+                  assert target.resolve().is_relative_to(root)
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  target.write_bytes(source.read(entry))
+          pathlib.Path('android/gradlew').chmod(0o755)
+          archive.unlink()
+          print('Imported 49 verified files.')
+          PY
+      - name: Commit imported project
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "feat: import Android app, backend, APK and Chinese documentation"
+            git push origin HEAD:main
+          fi
