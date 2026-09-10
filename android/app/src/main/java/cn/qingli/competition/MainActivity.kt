@@ -141,6 +141,7 @@ fun QutApp(incomingId: String?, consumed: () -> Unit) {
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var query by rememberSaveable { mutableStateOf("") }
     var category by rememberSaveable { mutableStateOf("全部") }
+    var source by rememberSaveable { mutableStateOf("全部") }
     var upcoming by rememberSaveable { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
     var syncError by remember { mutableStateOf<String?>(null) }
@@ -219,7 +220,8 @@ fun QutApp(incomingId: String?, consumed: () -> Unit) {
         bottomBar = {
             if (selected == null) NavigationBar(containerColor = Color.White, tonalElevation = 0.dp) {
                 listOf("资讯" to Icons.Outlined.Explore, "日程" to Icons.Outlined.CalendarMonth,
-                    "收藏" to Icons.Outlined.BookmarkBorder, "设置" to Icons.Outlined.Tune).forEachIndexed { index, pair ->
+                    "综测" to Icons.Outlined.School, "收藏" to Icons.Outlined.BookmarkBorder,
+                    "设置" to Icons.Outlined.Tune).forEachIndexed { index, pair ->
                     NavigationBarItem(selected = tab == index, onClick = { tab = index },
                         icon = { Icon(pair.second, pair.first, Modifier.size(23.dp)) }, label = { Text(pair.first, fontSize = 11.sp) },
                         colors = NavigationBarItemDefaults.colors(selectedIconColor = Blue, selectedTextColor = Blue,
@@ -241,11 +243,12 @@ fun QutApp(incomingId: String?, consumed: () -> Unit) {
                         chooseDate(context, selected.deadlineMillis) { chosen -> setReminder(selected, chosen, true) }
                     })
             } else when (tab) {
-                0 -> FeedScreen(items, query, { query = it }, category, { category = it }, upcoming,
+                0 -> FeedScreen(items, query, { query = it }, category, { category = it }, source, { source = it }, upcoming,
                     { upcoming = it }, refreshing, { sync() }, settings, syncError, ::open, ::toggleFavorite)
                 1 -> ScheduleScreen(items, ::open, { tab = 0 })
-                2 -> FavoritesScreen(items.filter { it.state.favorite }, ::open, ::toggleFavorite, { tab = 0 })
-                3 -> SettingsScreen(settings, items.size, refreshing, { sync() },
+                2 -> ZhcpScreen(settings, repo, snackbar)
+                3 -> FavoritesScreen(items.filter { it.state.favorite }, ::open, ::toggleFavorite, { tab = 0 })
+                4 -> SettingsScreen(settings, items.size, refreshing, { sync() },
                     onNews = { enabled -> if (enabled) withPermission { scope.launch { repo.setNews(true) } }
                         else scope.launch { repo.setNews(false) } },
                     onTest = { server -> repo.testConnection(server) },
@@ -270,14 +273,15 @@ private fun PageHeader(title: String, subtitle: String, right: @Composable (() -
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FeedScreen(all: List<NoticeItem>, query: String, onQuery: (String) -> Unit,
-                       category: String, onCategory: (String) -> Unit, upcoming: Boolean,
-                       onUpcoming: (Boolean) -> Unit, refreshing: Boolean, refresh: () -> Unit,
+                       category: String, onCategory: (String) -> Unit, source: String, onSource: (String) -> Unit,
+                       upcoming: Boolean, onUpcoming: (Boolean) -> Unit, refreshing: Boolean, refresh: () -> Unit,
                        settings: Settings, error: String?, open: (NoticeItem) -> Unit, favorite: (NoticeItem) -> Unit) {
     val now = System.currentTimeMillis()
     val active = all.count { (it.deadlineMillis ?: 0) > now }
     val soon = all.count { (it.deadlineMillis ?: 0) in now..(now + 7 * 86400000L) }
     val filtered = all.filter { item ->
         (category == "全部" || item.notice.category == category) &&
+            (source == "全部" || (source == "官网" && item.notice.isOfficial()) || (source == "QQ群" && !item.notice.isOfficial())) &&
             (query.isBlank() || item.notice.title.contains(query.trim(), ignoreCase = true) || item.notice.body.contains(query.trim(), ignoreCase = true)) &&
             (!upcoming || (item.deadlineMillis ?: 0) > now)
     }.let { list -> if (upcoming) list.sortedBy { it.deadlineMillis } else list }
@@ -331,6 +335,16 @@ private fun FeedScreen(all: List<NoticeItem>, query: String, onQuery: (String) -
                                 colors = FilterChipDefaults.filterChipColors(containerColor = Color.White, selectedContainerColor = Blue, selectedLabelColor = Color.White))
                         }
                     }
+                    Spacer(Modifier.height(8.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(listOf("全部来源", "官网", "QQ群")) { name ->
+                            val selected = if (name == "全部来源") source == "全部" else source == name
+                            FilterChip(selected = selected, onClick = { onSource(if (name == "全部来源") "全部" else name) },
+                                label = { Text(name, fontSize = 13.sp) }, shape = RoundedCornerShape(12.dp), border = null,
+                                colors = FilterChipDefaults.filterChipColors(containerColor = Color.White,
+                                    selectedContainerColor = Color(0xFF149F86), selectedLabelColor = Color.White))
+                        }
+                    }
                 }
                 item {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -343,8 +357,10 @@ private fun FeedScreen(all: List<NoticeItem>, query: String, onQuery: (String) -
                             Text(if (upcoming) "按发布查看" else "按截止查看", fontSize = 11.sp)
                         }
                     }
-                    Text(if (error != null) error else if (settings.sourceError.isNotBlank()) settings.sourceError else
-                        "来源：学校官网  ·  ${syncLabel(settings.sourceSuccess)} 更新", color = if (error != null) Orange else Muted, fontSize = 11.sp)
+                    Text(if (error != null) error else if (settings.sourceError.isNotBlank() || settings.qqError.isNotBlank())
+                        listOf(settings.sourceError, settings.qqError).filter { it.isNotBlank() }.joinToString("  ·  ")
+                    else "来源：学校官网 / QQ群  ·  官网 ${syncLabel(settings.sourceSuccess)}",
+                        color = if (error != null || settings.sourceError.isNotBlank() || settings.qqError.isNotBlank()) Orange else Muted, fontSize = 11.sp)
                 }
                 if (filtered.isEmpty()) item {
                     EmptyState(if (refreshing) "正在收集校园机会" else if (all.isEmpty()) "通知还在路上" else "没有找到相关竞赛",
@@ -379,6 +395,12 @@ private fun NoticeCard(item: NoticeItem, open: () -> Unit, favorite: () -> Unit)
                     Row(Modifier.padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(categoryIcon(notice.category), null, Modifier.size(13.dp), tint = color)
                         Spacer(Modifier.width(4.dp)); Text(notice.category, fontSize = 10.sp, color = color)
+                    }
+                }
+                if (!notice.isOfficial()) {
+                    Spacer(Modifier.width(8.dp))
+                    Surface(shape = RoundedCornerShape(9.dp), color = Teal.copy(alpha = 0.10f)) {
+                        Text("QQ群", Modifier.padding(horizontal = 7.dp, vertical = 4.dp), fontSize = 10.sp, color = Teal)
                     }
                 }
                 if (!item.state.read) {
@@ -585,7 +607,9 @@ private fun DetailScreen(item: NoticeItem, onBack: () -> Unit, favorite: () -> U
                     }
                 }
             }
-            item { Text("信息来自学校官网，报名要求和变更请以原文为准。图片与附件通过原站点查看。", fontSize = 11.sp, lineHeight = 19.sp, color = Muted) }
+            item { Text(if (notice.isOfficial()) "信息来自学校官网，报名要求和变更请以原文为准。图片与附件通过原站点查看。"
+                else "信息来自QQ群，经关键词筛选并由 AI 复核后收录。报名要求和变更请以群内原文或学校通知为准。",
+                fontSize = 11.sp, lineHeight = 19.sp, color = Muted) }
         }
         Surface(color = Color.White, shadowElevation = 3.dp) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -593,8 +617,117 @@ private fun DetailScreen(item: NoticeItem, onBack: () -> Unit, favorite: () -> U
                     Icon(if (item.state.favorite) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp)); Text(if (item.state.favorite) "已收藏" else "收藏")
                 }
-                Button(onClick = { openLink(context, notice.url) }, shape = RoundedCornerShape(14.dp), modifier = Modifier.height(48.dp).weight(1.7f)) {
-                    Text("查看原文"); Spacer(Modifier.width(8.dp)); Icon(Icons.AutoMirrored.Outlined.OpenInNew, null, Modifier.size(16.dp))
+                if (notice.hasWebUrl()) {
+                    Button(onClick = { openLink(context, notice.url) }, shape = RoundedCornerShape(14.dp), modifier = Modifier.height(48.dp).weight(1.7f)) {
+                        Text("查看原文"); Spacer(Modifier.width(8.dp)); Icon(Icons.AutoMirrored.Outlined.OpenInNew, null, Modifier.size(16.dp))
+                    }
+                } else {
+                    Button(onClick = {}, enabled = false, shape = RoundedCornerShape(14.dp), modifier = Modifier.height(48.dp).weight(1.7f)) {
+                        Text("来自QQ群")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ZhcpScreen(settings: Settings, repo: Repository, snackbar: SnackbarHostState) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var role by rememberSaveable { mutableStateOf("student") }
+    var account by rememberSaveable { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    var rows by remember { mutableStateOf(listOf<ZhcpRow>()) }
+    var mine by remember { mutableStateOf<ZhcpMine?>(null) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null && settings.zhcpToken.isNotBlank()) scope.launch {
+            loading = true
+            try {
+                mine = repo.zhcpUpload(settings.zhcpToken, uri)
+                snackbar.showSnackbar("材料已提交视觉审核")
+            } catch (e: Exception) {
+                snackbar.showSnackbar(e.message ?: "上传失败")
+            } finally { loading = false }
+        }
+    }
+    LaunchedEffect(settings.zhcpToken, settings.zhcpRole) {
+        if (settings.zhcpToken.isBlank()) return@LaunchedEffect
+        loading = true
+        try {
+            if (settings.zhcpRole == "secretary") rows = repo.zhcpClass(settings.zhcpToken)
+            else mine = repo.zhcpMine(settings.zhcpToken)
+        } catch (e: Exception) {
+            snackbar.showSnackbar(e.message ?: "综测数据加载失败")
+        } finally { loading = false }
+    }
+    Column(Modifier.fillMaxSize()) {
+        PageHeader("综测", if (settings.zhcpToken.isBlank()) "团支书用学工登录，学生用教务登录"
+            else "${settings.zhcpCollege} ${settings.zhcpClass} · ${settings.zhcpName}")
+        if (settings.zhcpToken.isBlank()) {
+            Column(Modifier.padding(horizontal = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = role == "student", onClick = { role = "student" }, label = { Text("学生") })
+                    FilterChip(selected = role == "secretary", onClick = { role = "secretary" }, label = { Text("团支书") })
+                }
+                OutlinedTextField(account, { account = it }, label = { Text(if (role == "secretary") "学工账号" else "教务账号") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(password, { password = it }, label = { Text("密码") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth())
+                Button(onClick = {
+                    scope.launch {
+                        loading = true
+                        try { repo.zhcpLogin(role, account, password); snackbar.showSnackbar("登录成功") }
+                        catch (e: Exception) { snackbar.showSnackbar(e.message ?: "登录失败") }
+                        finally { loading = false }
+                    }
+                }, enabled = !loading, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp)) {
+                    Text(if (loading) "正在验证…" else "登录")
+                }
+                Text("密码只发送给综测服务并加密保存，接口不会回传明文。资讯仍走竞赛通。", color = Muted, fontSize = 11.sp)
+            }
+        } else {
+            LazyColumn(contentPadding = PaddingValues(start = 24.dp, end = 24.dp, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                item {
+                    Surface(shape = RoundedCornerShape(20.dp), color = Color.White) {
+                        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(if (settings.zhcpRole == "secretary") "本班进度" else "我的成绩", fontWeight = FontWeight.Bold)
+                            if (settings.zhcpRole != "secretary" && mine != null) {
+                                Text("总分 ${mine!!.total}  ·  排名 ${mine!!.rank ?: "-"}", color = Blue, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (settings.zhcpRole != "secretary") {
+                                    Button(onClick = { picker.launch("*/*") }, enabled = !loading) { Text("上传材料") }
+                                } else {
+                                    Button(onClick = { openLink(context, settings.zhcpAdminUrl) }) { Text("打开管理端") }
+                                }
+                                TextButton(onClick = { scope.launch { repo.zhcpLogout() } }) { Text("退出登录") }
+                            }
+                        }
+                    }
+                }
+                if (settings.zhcpRole == "secretary") {
+                    items(rows) { row ->
+                        Surface(shape = RoundedCornerShape(16.dp), color = Color.White) {
+                            Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(row.name, fontWeight = FontWeight.Medium)
+                                    Text("${row.studentNo}  ·  总分 ${row.total}", color = Muted, fontSize = 11.sp)
+                                }
+                                Text(if (row.registered) "已注册" else "未注册", color = if (row.registered) Teal else Orange, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                } else {
+                    items(mine?.items ?: emptyList()) { item ->
+                        Surface(shape = RoundedCornerShape(16.dp), color = Color.White) {
+                            Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                                Text(item.first, fontWeight = FontWeight.Medium)
+                                Text(item.second, color = Muted, fontSize = 12.sp)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -629,7 +762,7 @@ private fun SettingsScreen(settings: Settings, count: Int, refreshing: Boolean, 
             }
         }) { Text(if (testing) "正在连接…" else "测试并保存") } }, dismissButton = { TextButton(onClick = { editing = false }, enabled = !testing) { Text("取消") } })
     if (help) AlertDialog(onDismissRequest = { help = false }, title = { Text("使用帮助") },
-        text = { Text("• 资讯页下拉即可更新，点击卡片阅读详情。\n\n• 点击收藏，正文就能离线查看。\n\n• 详情页开启提前一天提醒，日期不明确时可自行设置。所有日期均为北京时间。\n\n• 新通知默认关闭，可在本页开启。系统省电或强制停止可能延迟后台更新；重新打开 App 会同步。\n\n• 服务器暂时不可用时，保留手机已有通知。\n\n• 不需要账号。收藏和设置只保存在本机，卸载会清除。", fontSize = 13.sp, lineHeight = 23.sp) },
+        text = { Text("• 资讯页下拉即可更新，点击卡片阅读详情。\n\n• 综测页可选团支书（学工）或学生（教务）登录，学生可上传材料，团支书可打开管理端看本班注册与改分。\n\n• 点击收藏，正文就能离线查看。\n\n• 详情页开启提前一天提醒，日期不明确时可自行设置。所有日期均为北京时间。\n\n• 新通知默认关闭，可在本页开启。系统省电或强制停止可能延迟后台更新；重新打开 App 会同步。\n\n• 服务器暂时不可用时，保留手机已有通知。\n\n• 资讯无需账号。综测密码只发给综测服务并加密保存，接口不回传明文。", fontSize = 13.sp, lineHeight = 23.sp) },
         confirmButton = { TextButton(onClick = { help = false }) { Text("知道了") } })
     Column {
         PageHeader("设置", "按你的节奏，发现与准备")
@@ -644,13 +777,13 @@ private fun SettingsScreen(settings: Settings, count: Int, refreshing: Boolean, 
                             Text("青理竞赛通", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                             Spacer(Modifier.height(5.dp)); Text("为校园里的每一份热爱", color = Muted, fontSize = 11.sp)
                         }
-                        Text("1.0.0", color = Muted, fontSize = 10.sp)
+                        Text("1.2.0", color = Muted, fontSize = 10.sp)
                     }
                 }
             }
             item {
                 SettingGroup("通知与提醒") {
-                    SettingRow(Icons.Outlined.NotificationsActive, "新竞赛通知", "发现新的官网通知后合并提醒") {
+                    SettingRow(Icons.Outlined.NotificationsActive, "新竞赛通知", "发现新的官网或QQ群通知后合并提醒") {
                         Switch(checked = settings.newsEnabled, onCheckedChange = onNews)
                     }
                     HorizontalDivider(color = Background)
@@ -678,6 +811,9 @@ private fun SettingsScreen(settings: Settings, count: Int, refreshing: Boolean, 
             item {
                 SettingGroup("信息来源") {
                     SettingRow(Icons.Outlined.School, "创新创业学院", "官网更新：${syncLabel(settings.sourceSuccess)}", { openLink(context, "https://chuangye.qut.edu.cn/index/sy/tzgg.htm") })
+                    HorizontalDivider(color = Background)
+                    SettingRow(Icons.Outlined.Chat, "QQ竞赛群",
+                        if (settings.qqError.isNotBlank()) settings.qqError else "最近审核：${syncLabel(settings.qqSuccess)}")
                     HorizontalDivider(color = Background)
                     SettingRow(Icons.AutoMirrored.Outlined.Article, "微信参考文章", "外部原文入口", { openLink(context, WECHAT_REFERENCE) })
                 }

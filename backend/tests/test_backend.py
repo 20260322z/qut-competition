@@ -1,22 +1,11 @@
 from pathlib import Path
-import sqlite3
 import pytest
-from fastapi.testclient import TestClient
 
 from app import crawler
-from app.database import initialize, upsert, connect
-from app.main import app
+from app.database import initialize, upsert
 from app.parser import extract_deadline, parse_list, parse_notice, source_url, WithdrawnNotice
 
 FIXTURES = Path(__file__).parent / 'fixtures'
-
-
-@pytest.fixture
-def client(tmp_path, monkeypatch):
-    monkeypatch.setenv('DATABASE_PATH', str(tmp_path / 'test.db'))
-    monkeypatch.setenv('DISABLE_SCHEDULER', '1')
-    with TestClient(app) as value:
-        yield value
 
 
 def sample():

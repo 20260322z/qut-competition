@@ -1,16 +1,82 @@
 services:
   api:
     build: ./backend
-    image: qut-competition-api:1.0.0
+    image: qut-competition-api:1.1.0
     container_name: qut-competition-api
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "18086:8000"
     volumes:
       - qut-data:/data
+    env_file:
+      - .env
     environment:
       DATABASE_PATH: /data/notices.db
       TZ: Asia/Shanghai
+      NAPCAT_BASE_URL: ${NAPCAT_BASE_URL:-http://host.docker.internal:3000}
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+  napcat:
+    profiles: ["bundled-napcat"]
+    image: mlikiowa/napcat-docker:latest
+    container_name: qut-competition-napcat
+    restart: unless-stopped
+    mac_address: "02:42:c0:a8:0b:22"
+    ports:
+      - "6099:6099"
+    volumes:
+      - ./napcat/config:/app/napcat/config
+      - napcat-qq:/app/.config/QQ
+    environment:
+      NAPCAT_UID: "1000"
+      NAPCAT_GID: "1000"
+      WEBUI_TOKEN: ${WEBUI_TOKEN:-napcat}
+      TZ: Asia/Shanghai
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+  zhcp-api:
+    build: ./zhcp
+    image: qut-zhcp-api:1.0.0
+    container_name: qut-zhcp-api
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "18088:18088"
+    volumes:
+      - zhcp-files:/data/zhcp-files
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+      SPRING_DATASOURCE_URL: jdbc:mysql://host.docker.internal:3306/qut_zhcp?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: ${ZHCP_DB_USER:-pexitong3}
+      SPRING_DATASOURCE_PASSWORD: ${ZHCP_DB_PASSWORD}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      DEEPSEEK_VISION_MODEL: ${DEEPSEEK_VISION_MODEL:-deepseek-v4-flash-vision-exp}
+      ZHCP_ADMIN_URL: http://38.207.179.218:18089
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+  zhcp-ui:
+    build: ./zhcp-ui
+    image: qut-zhcp-ui:1.0.0
+    container_name: qut-zhcp-ui
+    restart: unless-stopped
+    depends_on:
+      - zhcp-api
+    ports:
+      - "18089:80"
     logging:
       driver: json-file
       options:
@@ -18,3 +84,5 @@ services:
         max-file: "3"
 volumes:
   qut-data:
+  napcat-qq:
+  zhcp-files:

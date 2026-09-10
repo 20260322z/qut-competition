@@ -156,6 +156,6 @@ def parse_notice(html, url):
     record = dict(id=hashlib.sha256(url.encode()).hexdigest()[:20], url=url, title=title,
                   published_at=published, category=categorize(title), summary=body[:150],
                   body=body, deadline=deadline, deadline_evidence=evidence,
-                  attachments=attachments, images=images)
+                  attachments=attachments, images=images, source='青岛理工大学创新创业学院')
     record['content_hash'] = hashlib.sha256(json.dumps(record, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     return record

@@ -14,7 +14,9 @@
 
 - `android/`：Kotlin、Jetpack Compose、Room、DataStore、WorkManager 安卓工程。
 - `backend/`：FastAPI、SQLite、定时官网采集、解析测试与真实页面样本。
-- `compose.yaml`：独立服务容器与持久化数据卷。
+- `zhcp/`：综测独立若依风格 Java 后端（学工/教务登录、规则包、DeepSeek 视觉审真伪）。
+- `zhcp-ui/`：团支书 Vue3 管理端。
+- `compose.yaml`：竞赛通知与综测两套容器；不要改动服务器上已有的 `ruoyi-admin-docker`。
 
 ## 安卓开发与构建
 
@@ -48,9 +50,23 @@ docker-compose -p qut-competition -f compose.yaml up -d --build
 curl http://127.0.0.1:18086/health
 ```
 
-若系统使用 Compose 插件，将命令中的 `docker-compose` 替换成 `docker compose`。对外开放 TCP 18086 即可。API 只读，不提供公网管理写入接口。该版本通过 HTTP 传输公开通知数据；可在现有反向代理中增加 HTTPS 后修改 App 服务地址。
+若系统使用 Compose 插件，将命令中的 `docker-compose` 替换成 `docker compose`。对外开放 TCP 18086 即可。综测 API 为 18088，团支书管理端为 18089。竞赛通知 API 只读；综测登录走学工/教务校验，校园密码 AES 加密落库且接口不回传明文。该版本通过 HTTP 传输；可在现有反向代理中增加 HTTPS 后修改 App 服务地址。
+
+```sh
+# 只构建综测（不影响已在跑的竞赛通 FastAPI）
+docker compose -p qut-competition -f compose.yaml up -d --build zhcp-api zhcp-ui
+curl http://127.0.0.1:18088/health
+```
 
 服务会在启动时自动同步，第一次约需一至两分钟，之后每小时扫描最新两页、每天北京时间 05:15 复查未到截止的通知。首次扫描约 100 条；列表上的已撤销页面跳过，图片或附件形式的通知正常收录。官网不提供完整中间证书链，项目补充从证书颁发机构取得的中间证书，保留正常的 TLS 主机名和根证书验证。
+
+QQ 竞赛群由 NapCat 采集。群消息先做关键词正则预筛，再每 15 分钟调用 DeepSeek 复核；判定为竞赛通知后写入同一通知库，可在 App 中按“QQ群”筛选查看。复制 `.env.example` 为 `.env`，填写 `DEEPSEEK_API_KEY` 和 `NAPCAT_TOKEN`。本机若已有 NapCat 容器，后端默认通过 `host.docker.internal:3000` 调用它，无需再起一套。全新服务器可用 `docker compose --profile bundled-napcat up -d` 一并启动。打开 `http://<服务器>:6099/webui` 扫码登录机器人 QQ，再把该账号拉进竞赛通知群。`QQ_GROUP_IDS` 可限制只听指定群，多个群号用逗号分隔；留空则监听机器人所在的全部群。
+
+```sh
+# 拉取 QQ 群最近消息并审核待确认条目
+docker exec qut-competition-api python -m app.manage qq-poll
+docker exec qut-competition-api python -m app.manage qq-review
+```
 
 ```sh
 # 查看运行状态、日志
@@ -75,9 +91,9 @@ docker-compose -p qut-competition -f compose.yaml up -d --build
 | 路径 | 说明 |
 | --- | --- |
 | `GET /health` | 服务版本、时间、已收录条数 |
-| `GET /api/v1/notices` | 通知列表，支持 `q`、`category`、`page`、`page_size`（1–100）、`updated_since`、`sync_before` |
+| `GET /api/v1/notices` | 通知列表，支持 `q`、`category`、`source`（`official` / `qq`）、`page`、`page_size`（1–100）、`updated_since`、`sync_before` |
 | `GET /api/v1/notices/{id}` | 通知全文、来源、附件、图片与截止时间依据 |
-| `GET /api/v1/sources` | 官网最近尝试/成功时间、同步状态、微信原文入口 |
+| `GET /api/v1/sources` | 官网与 QQ 群最近尝试/成功时间、同步状态、微信原文入口 |
 
 分类取值：科技、创业、设计、外语、综合；不传分类返回全部。日期采用 ISO 8601，截止时间携带北京时间偏移。截止时间不能明确识别时为 `null`，不据此显示“报名中”。微信链接仅为外部入口，不宣称已自动采集公众号。
 

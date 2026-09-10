@@ -1,0 +1,192 @@
+package com.ruoyi.zhcp.campus;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ruoyi.zhcp.common.ServiceException;
+import org.apache.hc.client5.http.classic.methods.HttpGet;
+import org.apache.hc.client5.http.classic.methods.HttpPost;
+import org.apache.hc.client5.http.cookie.BasicCookieStore;
+import org.apache.hc.client5.http.entity.UrlEncodedFormEntity;
+import org.apache.hc.client5.http.config.RequestConfig;
+import org.apache.hc.client5.http.cookie.StandardCookieSpec;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.core5.http.NameValuePair;
+import org.apache.hc.core5.http.io.entity.EntityUtils;
+import org.apache.hc.core5.http.message.BasicNameValuePair;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.springframework.stereotype.Component;
+
+import javax.crypto.Cipher;
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyFactory;
+import java.security.PublicKey;
+import java.security.spec.RSAPublicKeySpec;
+import java.util.ArrayList;
+import java.util.List;
+
+@Component
+public class JwClient {
+    private static final String BASE = "http://jxgl.qut.edu.cn/jwglxt";
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    public CampusProfile login(String account, String password) {
+        BasicCookieStore cookies = new BasicCookieStore();
+        RequestConfig rc = RequestConfig.custom().setCookieSpec(StandardCookieSpec.RELAXED).build();
+        try (CloseableHttpClient http = HttpClients.custom().setDefaultCookieStore(cookies).setDefaultRequestConfig(rc).build()) {
+            String loginHtml = get(http, BASE + "/xtgl/login_slogin.html");
+            Document doc = Jsoup.parse(loginHtml);
+            String csrf = doc.select("input[name=csrftoken]").attr("value");
+            String encrypted = encryptPassword(http, password);
+            List<NameValuePair> form = new ArrayList<>();
+            form.add(new BasicNameValuePair("csrftoken", csrf));
+            form.add(new BasicNameValuePair("language", "zh_CN"));
+            form.add(new BasicNameValuePair("yhm", account));
+            form.add(new BasicNameValuePair("mm", encrypted));
+            HttpPost post = new HttpPost(BASE + "/xtgl/login_slogin.html");
+            post.setEntity(new UrlEncodedFormEntity(form, StandardCharsets.UTF_8));
+            post.setHeader("User-Agent", "Mozilla/5.0");
+            post.setHeader("Referer", BASE + "/xtgl/login_slogin.html");
+            String body = http.execute(post, r -> EntityUtils.toString(r.getEntity(), StandardCharsets.UTF_8));
+            if (body.contains("用户名或密码不正确") || body.contains("登录失败") || body.contains("name=\"yhm\"")) {
+                throw new ServiceException("教务账号或密码不正确");
+            }
+            CampusProfile p = new CampusProfile();
+            p.studentNo = account;
+            fillProfile(http, p);
+            if (p.name == null || p.name.isBlank()) {
+                p.name = account;
+            }
+            if (p.college == null || p.college.isBlank()) p.college = "未知学院";
+            if (p.className == null || p.className.isBlank()) p.className = "未知班级";
+            return p;
+        } catch (ServiceException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ServiceException("教务系统暂时无法登录：" + e.getMessage());
+        }
+    }
+
+    private void fillProfile(CloseableHttpClient http, CampusProfile p) throws Exception {
+        String[] urls = {
+                BASE + "/xsxxxggl/xsxxwh_cxCkDgxsxx.html?gnmkdm=N100801",
+                BASE + "/xtgl/index_cxYhxxIndex.html?xt=jw&localeKey=zh_CN&_=" + System.currentTimeMillis(),
+                BASE + "/xtgl/login_cxCheckYh.html"
+        };
+        for (String url : urls) {
+            parseInfo(get(http, url), p);
+            if (p.name != null && !p.name.isBlank()) {
+                return;
+            }
+        }
+        parseInfo(get(http, BASE + "/xtgl/index_cxMenu.html?gnmkdm=index"), p);
+    }
+
+    private void parseInfo(String html, CampusProfile p) {
+        if (html == null) return;
+        String trimmed = html.trim();
+        if (trimmed.startsWith("{")) {
+            try {
+                JsonNode n = mapper.readTree(trimmed);
+                p.name = firstNonBlank(p.name, textOf(n, "xm", "XM", "userName"));
+                p.college = firstNonBlank(p.college, textOf(n, "jg_id", "dwmc", "xy", "xymc", "college"));
+                p.className = firstNonBlank(p.className, textOf(n, "bh_id", "bjmc", "bh", "className"));
+                p.studentNo = firstNonBlank(p.studentNo, textOf(n, "xh", "xh_id"));
+                if (p.name != null) return;
+            } catch (Exception ignored) {
+            }
+        }
+        Document d = Jsoup.parse(html);
+        String text = d.text();
+        if (p.name == null) {
+            p.name = first(d, "#xm", ".xm", "[name=xm]");
+            if (p.name == null) {
+                p.name = match(text, "姓名[：:]\\s*([\\u4e00-\\u9fa5·]{2,20})");
+            }
+        }
+        if (p.college == null) {
+            p.college = first(d, "#dwmc", "#xy", "[name=dwmc]");
+            if (p.college == null) {
+                p.college = match(text, "学院[：:]\\s*([\\u4e00-\\u9fa5A-Za-z0-9]{2,40})");
+            }
+        }
+        if (p.className == null) {
+            p.className = first(d, "#bjmc", "#bh_id", "[name=bjmc]");
+            if (p.className == null) {
+                p.className = match(text, "班级[：:]\\s*([\\u4e00-\\u9fa5A-Za-z0-9\\-]{2,40})");
+            }
+        }
+        if (p.studentNo == null) {
+            String xh = first(d, "#xh", "[name=xh]");
+            if (xh != null) p.studentNo = xh;
+        }
+        try {
+            JsonNode n = mapper.readTree(html.trim());
+            p.name = firstNonBlank(p.name, textOf(n, "xm", "XM", "userName"));
+            p.college = firstNonBlank(p.college, textOf(n, "dwmc", "xy", "xymc", "jg_id", "college"));
+            p.className = firstNonBlank(p.className, textOf(n, "bjmc", "bh_id", "bh", "className"));
+            p.studentNo = firstNonBlank(p.studentNo, textOf(n, "xh", "xh_id"));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private String encryptPassword(CloseableHttpClient http, String password) throws Exception {
+        String json = get(http, BASE + "/xtgl/login_getPublicKey.html?time=" + System.currentTimeMillis());
+        if (json == null || !json.trim().startsWith("{")) {
+            return password;
+        }
+        JsonNode n = mapper.readTree(json);
+        String modulus = n.path("modulus").asText();
+        String exponent = n.path("exponent").asText("AQAB");
+        if (modulus.isBlank()) {
+            return password;
+        }
+        BigInteger m = new BigInteger(1, java.util.Base64.getDecoder().decode(modulus));
+        BigInteger e;
+        try {
+            e = new BigInteger(1, java.util.Base64.getDecoder().decode(exponent));
+        } catch (Exception ex) {
+            e = new BigInteger(exponent, 16);
+        }
+        PublicKey key = KeyFactory.getInstance("RSA").generatePublic(new RSAPublicKeySpec(m, e));
+        Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+        cipher.init(Cipher.ENCRYPT_MODE, key);
+        return java.util.Base64.getEncoder().encodeToString(cipher.doFinal(password.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private String get(CloseableHttpClient http, String url) throws Exception {
+        HttpGet get = new HttpGet(url);
+        get.setHeader("User-Agent", "Mozilla/5.0");
+        get.setHeader("Accept", "application/json, text/html, */*");
+        get.setHeader("Referer", BASE + "/xtgl/login_slogin.html");
+        return http.execute(get, r -> EntityUtils.toString(r.getEntity(), StandardCharsets.UTF_8));
+    }
+
+    private static String first(Document d, String... css) {
+        for (String c : css) {
+            String v = d.select(c).val();
+            if (v == null || v.isBlank()) v = d.select(c).text();
+            if (v != null && !v.isBlank()) return v.trim();
+        }
+        return null;
+    }
+
+    private static String match(String text, String regex) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(regex).matcher(text);
+        return m.find() ? m.group(1).trim() : null;
+    }
+
+    private static String textOf(JsonNode n, String... keys) {
+        for (String k : keys) {
+            if (n.hasNonNull(k) && !n.get(k).asText().isBlank()) return n.get(k).asText().trim();
+        }
+        return null;
+    }
+
+    private static String firstNonBlank(String... vs) {
+        for (String v : vs) if (v != null && !v.isBlank()) return v;
+        return null;
+    }
+}

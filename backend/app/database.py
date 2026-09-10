@@ -46,7 +46,31 @@ def initialize():
                 last_error TEXT, running INTEGER NOT NULL DEFAULT 0
             );
             INSERT OR IGNORE INTO source_state(id) VALUES ('qut');
+            INSERT OR IGNORE INTO source_state(id) VALUES ('qq');
+            CREATE TABLE IF NOT EXISTS qq_messages (
+                id TEXT PRIMARY KEY,
+                group_id TEXT NOT NULL,
+                group_name TEXT NOT NULL DEFAULT '',
+                sender_id TEXT NOT NULL DEFAULT '',
+                sender_name TEXT NOT NULL DEFAULT '',
+                message_id TEXT NOT NULL,
+                raw_text TEXT NOT NULL,
+                links TEXT NOT NULL DEFAULT '[]',
+                received_at TEXT NOT NULL,
+                regex_matched INTEGER NOT NULL DEFAULT 0,
+                review_status TEXT NOT NULL DEFAULT 'pending',
+                review_reason TEXT,
+                review_attempts INTEGER NOT NULL DEFAULT 0,
+                reviewed_at TEXT,
+                notice_id TEXT,
+                UNIQUE(group_id, message_id)
+            );
+            CREATE INDEX IF NOT EXISTS qq_messages_status ON qq_messages(review_status, regex_matched);
         ''')
+        columns = {row[1] for row in db.execute('PRAGMA table_info(notices)')}
+        if 'source' not in columns:
+            db.execute("ALTER TABLE notices ADD COLUMN source TEXT NOT NULL DEFAULT '青岛理工大学创新创业学院'")
+        db.execute("CREATE INDEX IF NOT EXISTS notices_source ON notices(source)")
 
 
 def upsert(notice):
@@ -68,7 +92,7 @@ def upsert(notice):
 def public_notice(row):
     item = dict(row)
     item.pop('content_hash', None)
-    item['source'] = '青岛理工大学创新创业学院'
+    item['source'] = item.get('source') or '青岛理工大学创新创业学院'
     for field in ('attachments', 'images'):
         item[field] = json.loads(item[field])
     return item

@@ -1,0 +1,40 @@
+server:
+  port: 18088
+  servlet:
+    context-path: /
+spring:
+  application:
+    name: qut-zhcp
+  servlet:
+    multipart:
+      max-file-size: 80MB
+      max-request-size: 80MB
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://127.0.0.1:3306/qut_zhcp?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true}
+    username: ${SPRING_DATASOURCE_USERNAME:pexitong3}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 10
+      connection-init-sql: SET NAMES utf8mb4
+  jackson:
+    default-property-inclusion: non_null
+    time-zone: Asia/Shanghai
+    date-format: yyyy-MM-dd HH:mm:ss
+  sql:
+    init:
+      mode: always
+      encoding: UTF-8
+      schema-locations: classpath:schema.sql
+      continue-on-error: true
+
+zhcp:
+  jwt-secret: ${ZHCP_JWT_SECRET:qut-zhcp-jwt-change-this-key-32bytes!!}
+  jwt-ttl-hours: 72
+  aes-key: ${ZHCP_AES_KEY:qut-zhcp-aes-16key!}
+  upload-dir: ${ZHCP_UPLOAD_DIR:/data/zhcp-files}
+  deepseek-api-key: ${DEEPSEEK_API_KEY:}
+  deepseek-base: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+  vision-model: ${DEEPSEEK_VISION_MODEL:deepseek-v4-flash-vision-exp}
+  default-semester: ${ZHCP_SEMESTER:2025-2026-2}
+  admin-url: ${ZHCP_ADMIN_URL:http://38.207.179.218:18089}

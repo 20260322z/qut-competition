@@ -2,6 +2,18 @@
 .env
 .env.*
 !.env.example
+_inspect_*.py
+_deploy_*.py
+_redeploy_*.py
+_check_*.py
+_mysql_*.py
+_probe_*.py
+check_login.py
+.tools/
+qrcode.png
+napcat/config/onebot11_*.json
+napcat/config/napcat_*.json
+napcat/config/webui*.json
 **/signing.properties
 **/local.properties
 *.jks
@@ -30,5 +42,8 @@ venv/
 *.sqlite*
 *.log
 data/
+zhcp/target/
+zhcp-ui/node_modules/
+zhcp-ui/dist/
 
 # Public CA certificate and Gradle wrapper are intentional source assets.

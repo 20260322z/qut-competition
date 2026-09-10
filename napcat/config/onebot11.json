@@ -1,0 +1,36 @@
+{
+  "network": {
+    "httpServers": [
+      {
+        "name": "httpServer",
+        "enable": true,
+        "host": "0.0.0.0",
+        "port": 3000,
+        "enableCors": true,
+        "enableWebsocket": false,
+        "messagePostFormat": "array",
+        "token": "change-me",
+        "debug": false
+      }
+    ],
+    "httpClients": [
+      {
+        "name": "qutCompetition",
+        "enable": true,
+        "url": "http://api:8000/internal/qq/event",
+        "messagePostFormat": "array",
+        "reportSelfMessage": false,
+        "token": "change-me",
+        "debug": false
+      }
+    ],
+    "httpSseServers": [],
+    "websocketServers": [],
+    "websocketClients": [],
+    "plugins": []
+  },
+  "musicSignUrl": "",
+  "enableLocalFile2Url": false,
+  "parseMultMsg": true,
+  "imageDownloadProxy": ""
+}

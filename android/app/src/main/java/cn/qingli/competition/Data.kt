@@ -12,14 +12,18 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 
 const val DEFAULT_SERVER = "http://38.207.179.218:18086"
+const val DEFAULT_ZHCP = "http://38.207.179.218:18088"
+const val DEFAULT_ZHCP_ADMIN = "http://38.207.179.218:18089"
 const val WECHAT_REFERENCE = "https://mp.weixin.qq.com/s/BvhMwEWH8_bJdys8FNIByw"
 private val Context.preferenceStore by preferencesDataStore("qut_settings")
 
@@ -83,7 +87,30 @@ data class Settings(
     val lastSync: String = "",
     val syncCursor: String = "",
     val sourceSuccess: String = "",
-    val sourceError: String = ""
+    val sourceError: String = "",
+    val qqSuccess: String = "",
+    val qqError: String = "",
+    val zhcpToken: String = "",
+    val zhcpRole: String = "",
+    val zhcpName: String = "",
+    val zhcpCollege: String = "",
+    val zhcpClass: String = "",
+    val zhcpAdminUrl: String = DEFAULT_ZHCP_ADMIN
+)
+
+data class ZhcpRow(
+    val rosterId: Long,
+    val name: String,
+    val studentNo: String,
+    val registered: Boolean,
+    val total: Double,
+    val rank: Int?
+)
+
+data class ZhcpMine(
+    val total: Double,
+    val rank: Int?,
+    val items: List<Pair<String, String>>
 )
 
 data class SyncResult(val added: List<Notice>, val initial: Boolean, val total: Int)
@@ -102,10 +129,21 @@ class Repository(private val context: Context) {
     private val cursorKey = stringPreferencesKey("cursor")
     private val sourceSuccessKey = stringPreferencesKey("source_success")
     private val sourceErrorKey = stringPreferencesKey("source_error")
+    private val qqSuccessKey = stringPreferencesKey("qq_success")
+    private val qqErrorKey = stringPreferencesKey("qq_error")
+    private val zhcpTokenKey = stringPreferencesKey("zhcp_token")
+    private val zhcpRoleKey = stringPreferencesKey("zhcp_role")
+    private val zhcpNameKey = stringPreferencesKey("zhcp_name")
+    private val zhcpCollegeKey = stringPreferencesKey("zhcp_college")
+    private val zhcpClassKey = stringPreferencesKey("zhcp_class")
+    private val zhcpAdminKey = stringPreferencesKey("zhcp_admin")
 
     val settings: Flow<Settings> = prefs.data.map { p ->
         Settings(p[serverKey] ?: DEFAULT_SERVER, p[newsKey] ?: false,
-            p[syncKey] ?: "", p[cursorKey] ?: "", p[sourceSuccessKey] ?: "", p[sourceErrorKey] ?: "")
+            p[syncKey] ?: "", p[cursorKey] ?: "", p[sourceSuccessKey] ?: "", p[sourceErrorKey] ?: "",
+            p[qqSuccessKey] ?: "", p[qqErrorKey] ?: "",
+            p[zhcpTokenKey] ?: "", p[zhcpRoleKey] ?: "", p[zhcpNameKey] ?: "",
+            p[zhcpCollegeKey] ?: "", p[zhcpClassKey] ?: "", p[zhcpAdminKey] ?: DEFAULT_ZHCP_ADMIN)
     }
     val items: Flow<List<NoticeItem>> = combine(dao.observeNotices(), dao.observeStates()) { notices, states ->
         val index = states.associateBy { it.id }
@@ -132,6 +170,8 @@ class Repository(private val context: Context) {
             it.remove(syncKey)
             it.remove(sourceSuccessKey)
             it.remove(sourceErrorKey)
+            it.remove(qqSuccessKey)
+            it.remove(qqErrorKey)
         }
         value
     }
@@ -172,20 +212,115 @@ class Repository(private val context: Context) {
         } while (received.size < total && page <= 100)
         require(received.size >= total) { "同步数据过多，请更新 App" }
         dao.saveNotices(received)
-        val source = runCatching {
-            getJson(config.server + "/api/v1/sources").getJSONArray("items").getJSONObject(0)
+        val sources = runCatching {
+            getJson(config.server + "/api/v1/sources").getJSONArray("items")
         }.getOrNull()
         prefs.edit {
             it[syncKey] = Instant.now().toString()
             it[cursorKey] = before
-            if (source != null) {
-                it[sourceSuccessKey] = source.nullableString("last_success") ?: ""
-                it[sourceErrorKey] = source.nullableString("last_error") ?: ""
+            if (sources != null) {
+                for (index in 0 until sources.length()) {
+                    val source = sources.getJSONObject(index)
+                    when (source.optString("id")) {
+                        "qq" -> {
+                            it[qqSuccessKey] = source.nullableString("last_success") ?: ""
+                            it[qqErrorKey] = source.nullableString("last_error") ?: ""
+                        }
+                        else -> {
+                            it[sourceSuccessKey] = source.nullableString("last_success") ?: ""
+                            it[sourceErrorKey] = source.nullableString("last_error") ?: ""
+                        }
+                    }
+                }
             }
         }
         for (state in dao.reminders()) Reminders.schedule(context, state.id)
         SyncResult(received.filter { it.id !in previous }, config.syncCursor.isEmpty(), dao.allNotices().size)
     } }
+
+    private val zhcpClient = OkHttpClient.Builder().connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(300, TimeUnit.SECONDS).callTimeout(330, TimeUnit.SECONDS).build()
+
+    suspend fun zhcpLogin(role: String, account: String, password: String): Settings = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("role", role).put("username", account).put("password", password)
+        val req = Request.Builder().url("$DEFAULT_ZHCP/app/login")
+            .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+        zhcpClient.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) error("登录失败 ${resp.code}")
+            val json = JSONObject(resp.body?.string() ?: error("空响应"))
+            require(json.optInt("code") == 200) { json.optString("msg", "登录失败") }
+            val data = json.optJSONObject("data") ?: json
+            val token = data.optString("token").ifBlank { json.optString("token") }
+            val user = data.optJSONObject("user") ?: JSONObject()
+            prefs.edit {
+                it[zhcpTokenKey] = token
+                it[zhcpRoleKey] = user.optString("role", role)
+                it[zhcpNameKey] = user.optString("nickName")
+                it[zhcpCollegeKey] = user.optString("college")
+                it[zhcpClassKey] = user.optString("className")
+                it[zhcpAdminKey] = data.optString("adminUrl", DEFAULT_ZHCP_ADMIN)
+            }
+        }
+        settings.first()
+    }
+
+    suspend fun zhcpLogout() {
+        prefs.edit {
+            it.remove(zhcpTokenKey); it.remove(zhcpRoleKey); it.remove(zhcpNameKey)
+            it.remove(zhcpCollegeKey); it.remove(zhcpClassKey)
+        }
+    }
+
+    private fun zhcpGet(token: String, path: String): JSONObject {
+        val req = Request.Builder().url("$DEFAULT_ZHCP$path")
+            .header("Authorization", "Bearer $token").get().build()
+        zhcpClient.newCall(req).execute().use {
+            if (!it.isSuccessful) error("服务返回 ${it.code}")
+            val json = JSONObject(it.body?.string() ?: error("空响应"))
+            require(json.optInt("code") == 200) { json.optString("msg", "请求失败") }
+            return json
+        }
+    }
+
+    suspend fun zhcpClass(token: String): List<ZhcpRow> = withContext(Dispatchers.IO) {
+        val data = zhcpGet(token, "/app/zhcp/class").optJSONObject("data") ?: JSONObject()
+        val rows = data.optJSONArray("rows") ?: JSONArray()
+        (0 until rows.length()).map { i ->
+            val r = rows.getJSONObject(i)
+            ZhcpRow(r.optLong("roster_id"), r.optString("student_name"), r.optString("student_no"),
+                r.optInt("registered") == 1, r.optDouble("total_score", 0.0),
+                if (r.isNull("zhcp_rank")) null else r.optInt("zhcp_rank"))
+        }
+    }
+
+    suspend fun zhcpMine(token: String): ZhcpMine = withContext(Dispatchers.IO) {
+        val data = zhcpGet(token, "/app/zhcp/mine").optJSONObject("data") ?: JSONObject()
+        val score = data.optJSONObject("score") ?: JSONObject()
+        val items = data.optJSONArray("items") ?: JSONArray()
+        ZhcpMine(score.optDouble("total_score", 0.0),
+            if (score.isNull("zhcp_rank")) null else score.optInt("zhcp_rank"),
+            (0 until items.length()).map {
+                val it = items.getJSONObject(it)
+                it.optString("title") to "${it.optString("applied_points")} · ${it.optString("authenticity")}"
+            })
+    }
+
+    suspend fun zhcpUpload(token: String, uri: android.net.Uri): ZhcpMine = withContext(Dispatchers.IO) {
+        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: error("无法读取文件")
+        val name = uri.lastPathSegment ?: "materials.zip"
+        val body = okhttp3.MultipartBody.Builder().setType(okhttp3.MultipartBody.FORM)
+            .addFormDataPart("file", name, bytes.toRequestBody("application/octet-stream".toMediaType()))
+            .build()
+        val req = Request.Builder().url("$DEFAULT_ZHCP/app/zhcp/upload")
+            .header("Authorization", "Bearer $token").post(body).build()
+        zhcpClient.newCall(req).execute().use {
+            if (!it.isSuccessful) error("上传失败 ${it.code}")
+            val json = JSONObject(it.body?.string() ?: error("空响应"))
+            require(json.optInt("code") == 200) { json.optString("msg", "上传失败") }
+        }
+        zhcpMine(token)
+    }
 
     companion object {
         fun parseNotice(j: JSONObject) = Notice(
@@ -208,3 +343,7 @@ fun Notice.imageList(): List<String> = runCatching {
     val array = JSONArray(images)
     (0 until array.length()).map { array.getString(it) }
 }.getOrDefault(emptyList())
+
+fun Notice.isOfficial(): Boolean = !source.startsWith("QQ群")
+
+fun Notice.hasWebUrl(): Boolean = url.startsWith("http://") || url.startsWith("https://")
