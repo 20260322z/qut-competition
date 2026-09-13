@@ -14,6 +14,8 @@ import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -29,6 +31,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -50,10 +53,10 @@ import java.time.temporal.ChronoUnit
 import java.util.Calendar
 import java.util.Locale
 
-private val Blue = Color(0xFF315EF5)
-private val Ink = Color(0xFF18243D)
-private val Muted = Color(0xFF7B879C)
-private val Background = Color(0xFFF5F7FC)
+private val Blue = IosBlue
+private val Ink = IosInk
+private val Muted = IosMuted
+private val Background = IosBackground
 private val Teal = Color(0xFF149F86)
 private val Orange = Color(0xFFE98939)
 private val CHINA = ZoneId.of("Asia/Shanghai")
@@ -65,12 +68,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         incomingId.value = intent.getStringExtra("notice_id")
         setContent {
-            MaterialTheme(colorScheme = lightColorScheme(
-                primary = Blue, onPrimary = Color.White, primaryContainer = Color(0xFFEAF0FF),
-                secondary = Teal, background = Background, surface = Color.White,
-                onBackground = Ink, onSurface = Ink, onSurfaceVariant = Muted,
-                outline = Color(0xFFDCE2EF), surfaceVariant = Color(0xFFF0F3FA)
-            )) { QutApp(incomingId.value) { incomingId.value = null } }
+            QingliTheme { QutApp(incomingId.value) { incomingId.value = null } }
         }
     }
     override fun onNewIntent(intent: Intent) {
@@ -136,6 +134,8 @@ fun QutApp(incomingId: String?, consumed: () -> Unit) {
     val items by repo.items.collectAsStateWithLifecycle(emptyList())
     val settings by repo.settings.collectAsStateWithLifecycle(Settings())
     val scope = rememberCoroutineScope()
+    val view = androidx.compose.ui.platform.LocalView.current
+    val appKeyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     val snackbar = remember { SnackbarHostState() }
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -181,11 +181,19 @@ fun QutApp(incomingId: String?, consumed: () -> Unit) {
         }
     }
     fun open(item: NoticeItem) {
+        appKeyboard?.hide()
         selectedId = item.notice.id
         scope.launch { repo.editState(item.notice.id) { it.copy(read = true) } }
     }
     fun toggleFavorite(item: NoticeItem) {
-        scope.launch { repo.editState(item.notice.id) { it.copy(favorite = !it.favorite) } }
+        scope.launch {
+            snackbar.currentSnackbarData?.dismiss()
+            repo.editState(item.notice.id) { it.copy(favorite = !it.favorite) }
+            if (context.getSharedPreferences("student_feedback", 0).getBoolean("enabled", true))
+                view.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+            if (item.state.favorite && snackbar.showSnackbar("已取消收藏，已设提醒继续保留", "撤销") == SnackbarResult.ActionPerformed)
+                repo.editState(item.notice.id) { it.copy(favorite = true) }
+        }
     }
     fun setReminder(item: NoticeItem, deadline: Long?, custom: Boolean) {
         if (deadline == null) {
@@ -211,23 +219,15 @@ fun QutApp(incomingId: String?, consumed: () -> Unit) {
         }
     }
     val selected = items.find { it.notice.id == selectedId }
+    LaunchedEffect(tab, selectedId) { snackbar.currentSnackbarData?.dismiss() }
     BackHandler(selectedId != null || tab != 0) {
         if (selectedId != null) selectedId = null else tab = 0
     }
     Scaffold(
         containerColor = Background,
-        snackbarHost = { SnackbarHost(snackbar) },
+        snackbarHost = { SnackbarHost(snackbar, Modifier.padding(bottom = if (selectedId != null) 76.dp else 0.dp)) },
         bottomBar = {
-            if (selected == null) NavigationBar(containerColor = Color.White, tonalElevation = 0.dp) {
-                listOf("资讯" to Icons.Outlined.Explore, "日程" to Icons.Outlined.CalendarMonth,
-                    "综测" to Icons.Outlined.School, "收藏" to Icons.Outlined.BookmarkBorder,
-                    "设置" to Icons.Outlined.Tune).forEachIndexed { index, pair ->
-                    NavigationBarItem(selected = tab == index, onClick = { tab = index },
-                        icon = { Icon(pair.second, pair.first, Modifier.size(23.dp)) }, label = { Text(pair.first, fontSize = 11.sp) },
-                        colors = NavigationBarItemDefaults.colors(selectedIconColor = Blue, selectedTextColor = Blue,
-                            indicatorColor = Color(0xFFEAF0FF), unselectedIconColor = Muted, unselectedTextColor = Muted))
-                }
-            }
+            if (selected == null) IosTabBar(tab) { tab = it }
         }
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
@@ -242,27 +242,26 @@ fun QutApp(incomingId: String?, consumed: () -> Unit) {
                     }, custom = {
                         chooseDate(context, selected.deadlineMillis) { chosen -> setReminder(selected, chosen, true) }
                     })
-            } else when (tab) {
-                0 -> FeedScreen(items, query, { query = it }, category, { category = it }, source, { source = it }, upcoming,
-                    { upcoming = it }, refreshing, { sync() }, settings, syncError, ::open, ::toggleFavorite)
-                1 -> ScheduleScreen(items, ::open, { tab = 0 })
-                2 -> ZhcpScreen(settings, repo, snackbar)
-                3 -> FavoritesScreen(items.filter { it.state.favorite }, ::open, ::toggleFavorite, { tab = 0 })
-                4 -> SettingsScreen(settings, items.size, refreshing, { sync() },
+            } else StudentWorkspace(tab, items, settings, ::open, searchNotices = { query = it; category = "全部"; source = "全部"; upcoming = false },
+                feed = { FeedScreen(items, query, { query = it }, category, { category = it }, source, { source = it }, upcoming,
+                    { upcoming = it }, refreshing, { sync() }, settings, syncError, ::open, ::toggleFavorite) },
+                assessment = { ZhcpScreen(settings, repo, snackbar) },
+                favorites = { FavoritesScreen(items.filter { it.state.favorite }, ::open, ::toggleFavorite, { tab = 2 }) },
+                schedule = { ScheduleScreen(items, ::open, { tab = 2 }) },
+                preferences = { SettingsScreen(settings, items.size, refreshing, { sync() },
                     onNews = { enabled -> if (enabled) withPermission { scope.launch { repo.setNews(true) } }
                         else scope.launch { repo.setNews(false) } },
                     onTest = { server -> repo.testConnection(server) },
-                    onServer = { server -> repo.setServer(server); sync() })
-            }
+                    onServer = { server -> repo.setServer(server); sync() }) })
         }
     }
 }
 
 @Composable
 private fun PageHeader(title: String, subtitle: String, right: @Composable (() -> Unit)? = null) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(title, fontSize = 27.sp, fontWeight = FontWeight.Bold, color = Ink)
+            Text(title, fontSize = 25.sp, fontWeight = FontWeight.Bold, color = Ink)
             Spacer(Modifier.height(5.dp))
             Text(subtitle, fontSize = 12.sp, color = Muted)
         }
@@ -277,55 +276,87 @@ private fun FeedScreen(all: List<NoticeItem>, query: String, onQuery: (String) -
                        upcoming: Boolean, onUpcoming: (Boolean) -> Unit, refreshing: Boolean, refresh: () -> Unit,
                        settings: Settings, error: String?, open: (NoticeItem) -> Unit, favorite: (NoticeItem) -> Unit) {
     val now = System.currentTimeMillis()
+    var unread by rememberSaveable { mutableStateOf(false) }
+    var deadlineFilter by rememberSaveable { mutableStateOf("全部日期") }
+    var showFilters by rememberSaveable { mutableStateOf(false) }
+    var searchFocused by remember { mutableStateOf(false) }
+    val searchContext = LocalContext.current
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    val searchPreferences = remember { searchContext.getSharedPreferences("notice_searches", 0) }
+    var history by remember { mutableStateOf(runCatching {
+        val saved = org.json.JSONArray(searchPreferences.getString("items", "[]"))
+        (0 until saved.length()).map { saved.getString(it) }
+    }.getOrDefault(emptyList())) }
+    fun saveHistory(next: List<String>) {
+        history = next.take(10)
+        searchPreferences.edit().putString("items", org.json.JSONArray(history).toString()).apply()
+    }
     val active = all.count { (it.deadlineMillis ?: 0) > now }
     val soon = all.count { (it.deadlineMillis ?: 0) in now..(now + 7 * 86400000L) }
     val filtered = all.filter { item ->
         (category == "全部" || item.notice.category == category) &&
             (source == "全部" || (source == "官网" && item.notice.isOfficial()) || (source == "QQ群" && !item.notice.isOfficial())) &&
             (query.isBlank() || item.notice.title.contains(query.trim(), ignoreCase = true) || item.notice.body.contains(query.trim(), ignoreCase = true)) &&
-            (!upcoming || (item.deadlineMillis ?: 0) > now)
+            (!upcoming || (item.deadlineMillis ?: 0) > now) &&
+            (!unread || !item.state.read) &&
+            (deadlineFilter == "全部日期" || (deadlineFilter == "已截止" && item.deadlineMillis != null && item.deadlineMillis!! <= now) ||
+                (deadlineFilter == "待确认" && item.notice.deadline == null) || (deadlineFilter == "未截止" && (item.deadlineMillis ?: 0) > now))
     }.let { list -> if (upcoming) list.sortedBy { it.deadlineMillis } else list }
     Column {
-        PageHeader("青理竞赛通", "QINGLI  /  让每一次机会被看见") {
-            Surface(shape = CircleShape, color = Color.White) {
+        PageHeader("竞赛通知", if(unread || deadlineFilter!="全部日期" || source!="全部") "已应用筛选 · 可展开调整" else "最新机会，及时掌握") {
+            Row {
+                IconButton(onClick={showFilters=!showFilters}) { Icon(Icons.Outlined.Tune,"筛选通知",tint=if(showFilters)Blue else Muted) }
+                Surface(shape = CircleShape, color = Color.White) {
                 IconButton(onClick = refresh, enabled = !refreshing, modifier = Modifier.testTag("refresh")) {
                     if (refreshing) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
                     else Icon(Icons.Outlined.Refresh, "刷新通知", tint = Blue)
                 }
+                }
             }
         }
         PullToRefreshBox(isRefreshing = refreshing, onRefresh = refresh, modifier = Modifier.weight(1f)) {
-            LazyColumn(contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.fillMaxSize().testTag("feed_list")) {
-                item {
-                    Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(25.dp))
-                        .background(Brush.linearGradient(listOf(Color(0xFF284CDE), Color(0xFF507CF8)))).padding(18.dp)) {
-                        Icon(Icons.Outlined.EmojiEvents, null, Modifier.size(110.dp).align(Alignment.CenterEnd).offset(x = 22.dp), tint = Color.White.copy(alpha = 0.10f))
-                        Column {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(Modifier.size(6.dp).background(Color(0xFF89F0D2), CircleShape))
-                                Spacer(Modifier.width(7.dp))
-                                Text("校园竞赛 · 一站掌握", color = Color.White.copy(alpha = 0.85f), fontSize = 11.sp)
-                            }
-                            Spacer(Modifier.height(12.dp))
-                            Text("下一份精彩，从这里开始。", fontSize = 20.sp, lineHeight = 29.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                            Spacer(Modifier.height(14.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                                HeroStat(all.size.toString(), "收录通知")
-                                HeroStat(active.toString(), "未到截止")
-                                HeroStat(soon.toString(), "本周截止")
-                            }
+            LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(9.dp), modifier = Modifier.fillMaxSize().testTag("feed_list")) {
+                if(showFilters) item {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterChip(unread, { unread = !unread }, label = { Text("仅未读") })
+                        listOf("全部日期", "未截止", "已截止", "待确认").forEach { label ->
+                            FilterChip(deadlineFilter == label, { deadlineFilter = label; onUpcoming(false) }, label = { Text(label) })
                         }
+                        TextButton(onClick = { unread = false; deadlineFilter = "全部日期"; onQuery(""); onCategory("全部"); onSource("全部"); onUpcoming(false) }) { Text("重置筛选") }
                     }
                 }
                 item {
+                    Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                        IosMetric(all.size.toString(),"收录通知",Modifier.weight(1f),IosInk)
+                        IosMetric(active.toString(),"未到截止",Modifier.weight(1f))
+                        IosMetric(soon.toString(),"本周截止",Modifier.weight(1f),IosGreen)
+                    }
+                }
+
+                item {
                     OutlinedTextField(value = query, onValueChange = onQuery, singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = {
+                            if (query.isNotBlank()) saveHistory(listOf(query.trim()) + history.filter { it != query.trim() })
+                            keyboard?.hide()
+                        }),
                         placeholder = { Text("搜索竞赛名称、关键词", fontSize = 14.sp) },
                         leadingIcon = { Icon(Icons.Outlined.Search, null, tint = Muted) },
                         trailingIcon = if (query.isNotEmpty()) { { IconButton(onClick = { onQuery("") }) { Icon(Icons.Outlined.Close, "清空搜索") } } } else null,
-                        shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().testTag("search"),
+                        shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().onFocusChanged { searchFocused=it.isFocused }.testTag("search"),
                         colors = OutlinedTextFieldDefaults.colors(unfocusedContainerColor = Color.White,
                             focusedContainerColor = Color.White, unfocusedBorderColor = Color.Transparent, focusedBorderColor = Blue))
+                }
+                if (history.isNotEmpty() && searchFocused && query.isBlank()) item {
+                    Text("最近搜索", fontSize = 12.sp, color = Muted)
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(history, key = { it }) { term ->
+                            InputChip(selected = false, onClick = { onQuery(term) }, label = { Text(term.take(24)) },
+                                trailingIcon = { IconButton(onClick = { saveHistory(history.filter { it != term }) }) { Icon(Icons.Outlined.Close, "删除搜索 $term", Modifier.size(16.dp)) } })
+                        }
+                        item { TextButton(onClick = { saveHistory(emptyList()) }) { Text("清空记录") } }
+                    }
                 }
                 item {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -335,8 +366,8 @@ private fun FeedScreen(all: List<NoticeItem>, query: String, onQuery: (String) -
                                 colors = FilterChipDefaults.filterChipColors(containerColor = Color.White, selectedContainerColor = Blue, selectedLabelColor = Color.White))
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if(showFilters) Spacer(Modifier.height(8.dp))
+                    if(showFilters) LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(listOf("全部来源", "官网", "QQ群")) { name ->
                             val selected = if (name == "全部来源") source == "全部" else source == name
                             FilterChip(selected = selected, onClick = { onSource(if (name == "全部来源") "全部" else name) },
@@ -388,8 +419,8 @@ private fun HeroStat(value: String, label: String) {
 private fun NoticeCard(item: NoticeItem, open: () -> Unit, favorite: () -> Unit) {
     val notice = item.notice
     val color = categoryColor(notice.category)
-    Surface(onClick = open, shape = RoundedCornerShape(20.dp), color = Color.White, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(18.dp)) {
+    Surface(onClick = open, shape = RoundedCornerShape(14.dp), color = Color.White, modifier = Modifier.fillMaxWidth().testTag("notice-card-${notice.id}")) {
+        Column(Modifier.padding(13.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(shape = RoundedCornerShape(9.dp), color = color.copy(alpha = 0.09f)) {
                     Row(Modifier.padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -408,11 +439,12 @@ private fun NoticeCard(item: NoticeItem, open: () -> Unit, favorite: () -> Unit)
                     Box(Modifier.size(5.dp).background(Blue, CircleShape))
                     Spacer(Modifier.width(4.dp)); Text("未读", fontSize = 10.sp, color = Blue)
                 }
+                if (item.state.changeSummary.isNotBlank()) Text(" · 内容有更新", fontSize = 10.sp, color = Orange)
                 Spacer(Modifier.weight(1f))
                 Text(notice.publishedAt.replace('-', '.'), color = Muted, fontSize = 10.sp)
             }
             Spacer(Modifier.height(12.dp))
-            Text(notice.title, fontSize = 15.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            Text(notice.title, fontSize = 15.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(9.dp))
             Text(notice.summary.replace('\n', ' '), color = Muted, fontSize = 11.sp, lineHeight = 18.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(12.dp))
@@ -420,7 +452,7 @@ private fun NoticeCard(item: NoticeItem, open: () -> Unit, favorite: () -> Unit)
             Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 DeadlineLabel(item)
                 Spacer(Modifier.weight(1f))
-                IconButton(onClick = favorite, modifier = Modifier.size(36.dp)) {
+                IconButton(onClick = favorite, modifier = Modifier.size(48.dp)) {
                     Icon(if (item.state.favorite) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder,
                         if (item.state.favorite) "取消收藏" else "收藏通知", Modifier.size(19.dp), tint = if (item.state.favorite) Blue else Muted)
                 }
@@ -528,6 +560,10 @@ private fun DetailScreen(item: NoticeItem, onBack: () -> Unit, favorite: () -> U
                          reminder: (Boolean) -> Unit, custom: () -> Unit) {
     val context = LocalContext.current
     val notice = item.notice
+    val changes = remember(notice.id, notice.updatedAt) { item.state.changeSummary }
+    LaunchedEffect(notice.id, notice.updatedAt) {
+        if (item.state.changeSummary.isNotBlank()) context.repository().editState(notice.id) { it.copy(changeSummary = "") }
+    }
     Column {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回") }
@@ -541,6 +577,7 @@ private fun DetailScreen(item: NoticeItem, onBack: () -> Unit, favorite: () -> U
         LazyColumn(Modifier.weight(1f).testTag("detail_list"), contentPadding = PaddingValues(start = 24.dp, end = 24.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             item {
                 Text(notice.category + " / 竞赛通知", color = categoryColor(notice.category), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                if (changes.isNotBlank()) Text("本次更新：$changes", color = Orange, fontSize = 12.sp)
                 Spacer(Modifier.height(12.dp))
                 Text(notice.title, fontSize = 23.sp, lineHeight = 35.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(14.dp))
@@ -553,7 +590,7 @@ private fun DetailScreen(item: NoticeItem, onBack: () -> Unit, favorite: () -> U
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Outlined.EventAvailable, null, tint = Blue, modifier = Modifier.size(20.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text(if (item.state.customDeadline != null) "我的截止日期" else "报名截止", color = Blue, fontSize = 12.sp)
+                            Text(if (item.state.customDeadline != null) "自定义事项日期（非官方截止）" else "报名截止", color = Blue, fontSize = 12.sp)
                         }
                         Spacer(Modifier.height(10.dp))
                         Text(item.deadlineMillis?.let { dateLabel(it, "yyyy年MM月dd日 HH:mm") } ?: "截止时间待确认", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
@@ -575,6 +612,18 @@ private fun DetailScreen(item: NoticeItem, onBack: () -> Unit, favorite: () -> U
                 }
             }
             item { Text("通知正文", fontSize = 17.sp, fontWeight = FontWeight.Bold) }
+            item {
+                var offset by rememberSaveable { mutableIntStateOf(1) }
+                Text("云端邮箱截止提醒", fontWeight = FontWeight.Medium)
+                Text("先在我的 → 邮箱提醒中绑定收件邮箱并开启竞赛截止提醒。", fontSize = 12.sp)
+                StudentTabs(listOf("提前一天", "提前三天"), if (offset == 1) 0 else 1) { offset = if (it == 0) 1 else 3 }
+                if (notice.deadline != null) OnlineAction("保存此竞赛的邮箱提醒") {
+                    val due = Instant.parse(notice.deadline).epochSecond - offset * 86400L
+                    context.students().api("reminders/notice-${notice.id}", "PUT", org.json.JSONObject()
+                        .put("title", notice.title).put("due", due).put("category", "deadline").put("notice_id", notice.id).put("offset_days", offset))
+                    "已同步到服务器；官方截止时间变化时会调整相对提醒"
+                } else Text("截止待确认，请到邮箱提醒页添加自定义时间。", fontSize = 12.sp)
+            }
             item {
                 Surface(shape = RoundedCornerShape(20.dp), color = Color.White) {
                     androidx.compose.foundation.text.selection.SelectionContainer {
@@ -777,7 +826,7 @@ private fun SettingsScreen(settings: Settings, count: Int, refreshing: Boolean, 
                             Text("青理竞赛通", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                             Spacer(Modifier.height(5.dp)); Text("为校园里的每一份热爱", color = Muted, fontSize = 11.sp)
                         }
-                        Text("1.2.0", color = Muted, fontSize = 10.sp)
+                        Text("2.0.0", color = Muted, fontSize = 10.sp)
                     }
                 }
             }

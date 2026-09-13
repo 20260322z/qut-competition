@@ -41,7 +41,7 @@ def ask_deepseek(text, group_name=''):
     key = os.getenv('DEEPSEEK_API_KEY', '').strip()
     if not key:
         raise RuntimeError('未配置 DEEPSEEK_API_KEY')
-    model = os.getenv('DEEPSEEK_MODEL', 'deepseek-chat').strip() or 'deepseek-chat'
+    model = os.getenv('DEEPSEEK_MODEL', 'deepseek-flash').strip() or 'deepseek-flash'
     payload = {
         'model': model,
         'messages': [
@@ -49,6 +49,7 @@ def ask_deepseek(text, group_name=''):
             {'role': 'user', 'content': f'群名称：{group_name or "未知"}\n消息如下，请用 JSON 审核：\n{text[:4000]}'},
         ],
         'response_format': {'type': 'json_object'},
+        'thinking': {'type': 'disabled'},
         'temperature': 0.1,
         'max_tokens': 500,
     }

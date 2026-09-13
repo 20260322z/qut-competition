@@ -1,7 +1,7 @@
 services:
   api:
     build: ./backend
-    image: qut-competition-api:1.1.0
+    image: qut-competition-api:2.2.0
     container_name: qut-competition-api
     restart: unless-stopped
     extra_hosts:
@@ -44,7 +44,7 @@ services:
         max-file: "3"
   zhcp-api:
     build: ./zhcp
-    image: qut-zhcp-api:1.0.0
+    image: qut-zhcp-api:2.0.0
     container_name: qut-zhcp-api
     restart: unless-stopped
     extra_hosts:

@@ -86,6 +86,6 @@ def test_official_and_qq_sources_are_separated(client, monkeypatch):
     assert sources[1]['id'] == 'qq'
     assert sources[1]['notice_count'] == 1
     health = client.get('/health').json()
-    assert health['version'] == '1.1.0'
+    assert health['version'] == '2.2.0'
     assert health['qq_notice_count'] == 1
     assert health['notice_count'] == 2

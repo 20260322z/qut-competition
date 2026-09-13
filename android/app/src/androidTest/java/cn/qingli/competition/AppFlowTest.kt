@@ -19,24 +19,35 @@ class AppFlowTest {
         rule.waitUntil(timeoutMillis = 90000) {
             runBlocking { repo.dao.allNotices().isNotEmpty() }
         }
-        val target = runBlocking { repo.dao.allNotices().first { it.title.contains("2026年11月全国跨文化") } }
-        rule.onNodeWithTag("search").performTextInput("跨文化")
-        rule.onNodeWithTag("feed_list").performScrollToNode(hasText(target.title))
-        rule.onNodeWithText(target.title).performClick()
+        val target = runBlocking { repo.dao.allNotices().first { it.hasWebUrl() } }
+        rule.onNodeWithText("竞赛", useUnmergedTree = true).performClick()
+        rule.onNodeWithTag("search").performTextInput(target.title)
+        rule.onNodeWithTag("search").performImeAction()
+        rule.onNodeWithTag("feed_list").performScrollToNode(hasTestTag("notice-card-${target.id}"))
+        rule.onNodeWithTag("notice-card-${target.id}").performClick()
         rule.onNodeWithText("通知详情").assertIsDisplayed()
         rule.onNodeWithText("查看原文").assertIsDisplayed()
         rule.waitUntil { runBlocking { repo.dao.state(target.id)?.read == true } }
         val state = runBlocking { repo.dao.state(target.id) }
-        if (state?.favorite == true) rule.onNodeWithText("已收藏", useUnmergedTree = true).performClick()
+        if (state?.favorite == true) {
+            rule.onNodeWithText("已收藏", useUnmergedTree = true).performClick()
+            rule.waitUntil(timeoutMillis = 5000) { runBlocking { repo.dao.state(target.id)?.favorite == false } }
+        }
+        rule.waitUntil(timeoutMillis = 5000) {
+            rule.onAllNodesWithText("收藏", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+        }
         rule.onNodeWithText("收藏", useUnmergedTree = true).performClick()
-        rule.waitUntil { runBlocking { repo.dao.state(target.id)?.favorite == true } }
+        rule.waitUntil(timeoutMillis = 5000) { runBlocking { repo.dao.state(target.id)?.favorite == true } }
         rule.onNodeWithContentDescription("返回").performClick()
-        rule.onNodeWithText("收藏", useUnmergedTree = true).performClick()
+        rule.onNodeWithText("我的", useUnmergedTree = true).performClick()
+        rule.onNodeWithText("我的收藏").performClick()
         rule.onNodeWithText("我的收藏").assertIsDisplayed()
         rule.onNodeWithText(target.title).assertExists()
-        rule.onNodeWithText("日程", useUnmergedTree = true).performClick()
-        rule.onNodeWithText("竞赛日程").assertIsDisplayed()
-        rule.onNodeWithText("设置", useUnmergedTree = true).performClick()
+        rule.onNodeWithText("首页", useUnmergedTree = true).performClick()
+        rule.onNodeWithText("竞赛日程").performScrollTo().performClick()
+        rule.onNodeWithText("统一日程").assertIsDisplayed()
+        rule.onNodeWithText("我的", useUnmergedTree = true).performClick()
+        rule.onNodeWithText("设置与连接").performScrollTo().performClick()
         rule.onNodeWithText("通知与提醒").assertExists()
         assertTrue(runBlocking { repo.testConnection(DEFAULT_SERVER) } > 0)
     }

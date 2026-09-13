@@ -47,3 +47,7 @@ zhcp-ui/node_modules/
 zhcp-ui/dist/
 
 # Public CA certificate and Gradle wrapper are intentional source assets.
+
+# Private delivery bundles must never enter the public repository.
+*签名备份*.zip
+*-完整交付包.zip

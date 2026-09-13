@@ -51,7 +51,8 @@ data class UserState(
     val read: Boolean = false,
     val reminder: Boolean = false,
     val customDeadline: Long? = null,
-    val sentForDeadline: Long? = null
+    val sentForDeadline: Long? = null,
+    val changeSummary: String = ""
 )
 
 data class NoticeItem(val notice: Notice, val state: UserState = UserState(notice.id)) {
@@ -78,7 +79,7 @@ interface NoticeDao {
     @Upsert suspend fun saveState(state: UserState)
 }
 
-@Database(entities = [Notice::class, UserState::class], version = 1, exportSchema = false)
+@Database(entities = [Notice::class, UserState::class], version = 2, exportSchema = false)
 abstract class QutDatabase : RoomDatabase() { abstract fun dao(): NoticeDao }
 
 data class Settings(
@@ -116,7 +117,12 @@ data class ZhcpMine(
 data class SyncResult(val added: List<Notice>, val initial: Boolean, val total: Int)
 
 class Repository(private val context: Context) {
-    private val db = Room.databaseBuilder(context, QutDatabase::class.java, "qut.db").build()
+    private val db = Room.databaseBuilder(context, QutDatabase::class.java, "qut.db")
+        .addMigrations(object : androidx.room.migration.Migration(1, 2) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE user_states ADD COLUMN changeSummary TEXT NOT NULL DEFAULT ''")
+            }
+        }).build()
     val dao = db.dao()
     private val prefs = context.preferenceStore
     private val syncMutex = Mutex()
@@ -192,7 +198,8 @@ class Repository(private val context: Context) {
 
     suspend fun sync(): SyncResult = syncMutex.withLock { withContext(Dispatchers.IO) {
         val config = settings.first()
-        val previous = dao.allNotices().map { it.id }.toSet()
+        val originals = dao.allNotices().associateBy { it.id }
+        val previous = originals.keys
         val received = mutableListOf<Notice>()
         var page = 1
         var before = ""
@@ -211,6 +218,16 @@ class Repository(private val context: Context) {
             page++
         } while (received.size < total && page <= 100)
         require(received.size >= total) { "同步数据过多，请更新 App" }
+        for (fresh in received) {
+            val old = originals[fresh.id] ?: continue
+            val changes = buildList {
+                if (old.title != fresh.title) add("标题更新")
+                if (old.body != fresh.body) add("正文更新")
+                if (old.deadline != fresh.deadline) add("截止时间：${old.deadline?.take(10) ?: "待确认"} → ${fresh.deadline?.take(10) ?: "待确认"}")
+                if (old.attachments != fresh.attachments) add("附件更新")
+            }
+            if (changes.isNotEmpty()) editState(fresh.id) { it.copy(changeSummary = changes.joinToString("；")) }
+        }
         dao.saveNotices(received)
         val sources = runCatching {
             getJson(config.server + "/api/v1/sources").getJSONArray("items")
@@ -240,6 +257,26 @@ class Repository(private val context: Context) {
 
     private val zhcpClient = OkHttpClient.Builder().connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(300, TimeUnit.SECONDS).callTimeout(330, TimeUnit.SECONDS).build()
+
+    suspend fun transcriptPreview(account: String, password: String): String = withContext(Dispatchers.IO) {
+        val config = settings.first()
+        require(config.zhcpToken.isNotBlank() && config.zhcpRole == "student") { "请先在学业 → 综测中登录本人学生账号" }
+        val body = JSONObject().put("account", account).put("password", password).put("consent", "true")
+        val request = Request.Builder().url("$DEFAULT_ZHCP/app/academic/transcript")
+            .header("Authorization", "Bearer ${config.zhcpToken}")
+            .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+        zhcpClient.newCall(request).execute().use { response ->
+            require(response.isSuccessful) { "教务成绩接口暂不可用，可改用 CSV 导入" }
+            val json = JSONObject(response.body?.string() ?: error("空响应"))
+            require(json.optInt("code") == 200) { json.optString("msg", "读取失败") }
+            val rows = json.getJSONObject("data").getJSONArray("items").objects()
+            require(rows.isNotEmpty()) { "教务未返回成绩，原数据保持不变" }
+            fun csv(value: String) = "\"" + value.replace("\"", "\"\"") + "\""
+            "学期,课程,学分,成绩,绩点,状态\n" + rows.joinToString("\n") { row ->
+                listOf("semester", "course", "credits", "score", "gpa", "status").joinToString(",") { csv(row.optString(it)) }
+            }
+        }
+    }
 
     suspend fun zhcpLogin(role: String, account: String, password: String): Settings = withContext(Dispatchers.IO) {
         val body = JSONObject().put("role", role).put("username", account).put("password", password)

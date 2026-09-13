@@ -3,3 +3,4 @@ uvicorn==0.34.2
 beautifulsoup4==4.13.4
 httpx==0.28.1
 APScheduler==3.11.0
+pypdf==6.10.0

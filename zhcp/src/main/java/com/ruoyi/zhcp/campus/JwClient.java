@@ -26,11 +26,78 @@ import java.security.PublicKey;
 import java.security.spec.RSAPublicKeySpec;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.LinkedHashMap;
+import org.apache.hc.core5.util.Timeout;
 
 @Component
 public class JwClient {
     private static final String BASE = "http://jxgl.qut.edu.cn/jwglxt";
     private final ObjectMapper mapper = new ObjectMapper();
+
+    /** User-triggered, read-only transcript preview. Never stores the supplied password. */
+    public List<Map<String, Object>> transcript(String account, String password) {
+        if (account == null || password == null || account.isBlank() || password.isBlank())
+            throw new ServiceException("请输入本人的教务账号与密码");
+        BasicCookieStore cookies = new BasicCookieStore();
+        RequestConfig rc = RequestConfig.custom().setCookieSpec(StandardCookieSpec.RELAXED)
+                .setConnectionRequestTimeout(Timeout.ofSeconds(20)).setResponseTimeout(Timeout.ofSeconds(35)).build();
+        try (CloseableHttpClient http = HttpClients.custom().setDefaultCookieStore(cookies).setDefaultRequestConfig(rc).build()) {
+            Document login = Jsoup.parse(get(http, BASE + "/xtgl/login_slogin.html"));
+            if (!login.select("input[name=yzm], input[name=verifyCode]").isEmpty())
+                throw new ServiceException("教务系统要求验证码，请先在学校页面完成验证或改用成绩文件导入");
+            HttpPost signin = new HttpPost(BASE + "/xtgl/login_slogin.html");
+            signin.setHeader("User-Agent", "Mozilla/5.0");
+            signin.setHeader("Referer", BASE + "/xtgl/login_slogin.html");
+            signin.setEntity(new UrlEncodedFormEntity(List.of(
+                    new BasicNameValuePair("csrftoken", login.select("input[name=csrftoken]").attr("value")),
+                    new BasicNameValuePair("language", "zh_CN"), new BasicNameValuePair("yhm", account.trim()),
+                    new BasicNameValuePair("mm", encryptPassword(http, password))), StandardCharsets.UTF_8));
+            String signed = http.execute(signin, r -> EntityUtils.toString(r.getEntity(), StandardCharsets.UTF_8));
+            if (signed.contains("用户名或密码不正确") || !Jsoup.parse(signed).select("input[name=yhm]").isEmpty())
+                throw new ServiceException("教务登录未完成，请检查账号、密码或学校验证要求");
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (int page = 1; page <= 20; page++) {
+                HttpPost query = new HttpPost(BASE + "/cjcx/cjcx_cxDgXscj.html?doType=query&gnmkdm=N305005");
+                query.setHeader("User-Agent", "Mozilla/5.0");
+                query.setHeader("X-Requested-With", "XMLHttpRequest");
+                query.setEntity(new UrlEncodedFormEntity(List.of(
+                        new BasicNameValuePair("xnm", ""), new BasicNameValuePair("xqm", ""),
+                        new BasicNameValuePair("queryModel.showCount", "100"),
+                        new BasicNameValuePair("queryModel.currentPage", String.valueOf(page)),
+                        new BasicNameValuePair("queryModel.sortName", "xnm"),
+                        new BasicNameValuePair("queryModel.sortOrder", "asc")), StandardCharsets.UTF_8));
+                String raw = http.execute(query, r -> EntityUtils.toString(r.getEntity(), StandardCharsets.UTF_8));
+                JsonNode root = mapper.readTree(raw);
+                if (!root.has("items") || !root.path("items").isArray() || !root.has("totalCount"))
+                    throw new ServiceException("教务成绩页面格式发生变化，未导入任何记录，请使用 CSV 导入");
+                for (JsonNode row : root.path("items")) result.add(transcriptRow(row));
+                if (result.size() >= root.path("totalCount").asInt()) return result;
+                if (root.path("items").isEmpty()) break;
+            }
+            throw new ServiceException("未取得完整成绩单，未覆盖原记录，请稍后重试或使用 CSV 导入");
+        } catch (ServiceException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ServiceException("教务成绩暂时读取失败；原记录仍保留，可改用 CSV 导入");
+        }
+    }
+
+    static Map<String, Object> transcriptRow(JsonNode row) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        String term = row.path("xqmmc").asText(row.path("xqm").asText());
+        String name = row.path("kcmc").asText();
+        if (name.isBlank()) throw new ServiceException("成绩存在无课程名称的记录，请核对原件");
+        value.put("semester", row.path("xnm").asText() + "-" + term);
+        value.put("course", name);
+        value.put("credits", row.path("xf").asText());
+        value.put("score", row.path("cj").asText());
+        value.put("gpa", row.path("jd").asText());
+        String exam = row.path("ksxz").asText() + row.path("ksxzmc").asText() + row.path("cxbj").asText();
+        value.put("status", exam.contains("重修") ? "重修" : exam.contains("补考") ? "补考" : "正常");
+        value.put("raw", row);
+        return value;
+    }
 
     public CampusProfile login(String account, String password) {
         BasicCookieStore cookies = new BasicCookieStore();

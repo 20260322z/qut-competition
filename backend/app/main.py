@@ -12,9 +12,11 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 from . import crawler, qq_ingest, qq_review
 from .database import connect, initialize, now, public_notice
 from .parser import LIST_URL
+from . import student_store, student_api, student_mail, student_ai, student_collaboration
+from . import workspace_agents, workspace_files, workspace_contests
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s %(message)s')
-APP_VERSION = '1.1.0'
+APP_VERSION = '2.2.0'
 
 
 def authorized_napcat(authorization: str | None, access_token: str | None,
@@ -34,6 +36,10 @@ def authorized_napcat(authorization: str | None, access_token: str | None,
 @asynccontextmanager
 async def lifespan(app):
     initialize()
+    student_store.initialize()
+    workspace_agents.initialize()
+    workspace_files.initialize()
+    workspace_contests.initialize()
     scheduler = BackgroundScheduler(timezone='Asia/Shanghai')
     if os.getenv('DISABLE_SCHEDULER') != '1':
         scheduler.add_job(crawler.sync, 'interval', hours=1, id='hourly',
@@ -45,6 +51,10 @@ async def lifespan(app):
         scheduler.add_job(qq_review.review, 'interval', minutes=15, id='qq-review',
                           next_run_time=datetime.now(timezone.utc), max_instances=1, coalesce=True)
         scheduler.start()
+        scheduler.add_job(student_mail.tick, 'interval', seconds=30, id='student-mail', max_instances=1, coalesce=True)
+        scheduler.add_job(student_ai.tick, 'interval', seconds=10, id='student-ai', max_instances=1, coalesce=True)
+        scheduler.add_job(workspace_agents.tick, 'interval', seconds=3, id='workspace-agents', max_instances=1, coalesce=True)
+        scheduler.add_job(workspace_contests.tick, 'interval', minutes=5, id='contest-sources', next_run_time=datetime.now(timezone.utc), max_instances=1, coalesce=True)
     yield
     if scheduler.running:
         scheduler.shutdown(wait=False)
@@ -52,6 +62,13 @@ async def lifespan(app):
 
 app = FastAPI(title='青理竞赛通 API', version=APP_VERSION, lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
+app.include_router(student_mail.router)
+app.include_router(student_api.router)
+app.include_router(student_ai.router)
+app.include_router(student_collaboration.router)
+app.include_router(workspace_agents.router)
+app.include_router(workspace_files.router)
+app.include_router(workspace_contests.router)
 
 
 @app.get('/health')
