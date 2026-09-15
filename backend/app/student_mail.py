@@ -280,7 +280,7 @@ def tick():
                     footer += f'\n退订：{base}/api/v1/student/email/unsubscribe/{sub["unsubscribe"]}'
                 interval = 3600 if config.get('frequency')=='hourly' else 86400
                 if config.get('news') and stamp-sub['last_digest']>=interval:
-                    notices = db.execute('SELECT * FROM notices WHERE created_at>? AND created_at<=? ORDER BY created_at',
+                    notices = db.execute('SELECT * FROM notices WHERE silent_import=0 AND created_at>? AND created_at<=? ORDER BY created_at',
                         (datetime.fromtimestamp(max(sub['last_digest'],sub['baseline']),timezone.utc).isoformat(timespec='microseconds'),datetime.fromtimestamp(stamp,timezone.utc).isoformat(timespec='microseconds'))).fetchall()
                     chosen = [n for n in notices if (not config.get('categories') or n['category'] in config['categories']) and
                               (not config.get('keywords') or any(k.casefold() in (n['title']+' '+n['body']).casefold() for k in config['keywords']))]

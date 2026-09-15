@@ -99,7 +99,7 @@ def team_view(db, row, owner=''):
 def teams(contest: str='', q: str=Query('',max_length=100), page: int=Query(1,ge=1)):
     with connect() as db:
         expire(db)
-        rows = db.execute("SELECT * FROM teams WHERE status!='closed' AND (?='' OR contest=?) AND instr(title,?)>0 ORDER BY updated DESC LIMIT 30 OFFSET ?",(contest,contest,q,(page-1)*30)).fetchall()
+        rows = db.execute("SELECT * FROM teams WHERE status!='closed' AND (?='' OR contest=?) AND instr(title||data||contest,?)>0 ORDER BY updated DESC LIMIT 30 OFFSET ?",(contest,contest,q,(page-1)*30)).fetchall()
         return {'items':[team_view(db,r) for r in rows]}
 
 
@@ -249,9 +249,10 @@ class Post(BaseModel):
 
 
 @router.get('/posts')
-def posts(contest: str='', q: str=Query('',max_length=100), page: int=Query(1,ge=1), owner=Depends(optional_user)):
+def posts(contest: str='', q: str=Query('',max_length=100), page: int=Query(1,ge=1), mine: bool=False, owner=Depends(optional_user)):
+    if mine and not owner: raise HTTPException(401,'请先登录')
     with connect() as db:
-        rows = db.execute("SELECT id,owner,contest,title,body,year,updated FROM posts WHERE hidden=0 AND (?='' OR contest=?) AND instr(title||body,?)>0 AND owner NOT IN (SELECT target FROM blocks WHERE owner=?) ORDER BY updated DESC LIMIT 30 OFFSET ?",(contest,contest,q,owner,(page-1)*30)).fetchall()
+        rows = db.execute("SELECT id,owner,contest,title,body,year,updated FROM posts WHERE hidden=0 AND (?=0 OR owner=?) AND (?='' OR contest=?) AND instr(title||body,?)>0 AND owner NOT IN (SELECT target FROM blocks WHERE owner=?) ORDER BY updated DESC LIMIT 30 OFFSET ?",(int(mine),owner,contest,contest,q,owner,(page-1)*30)).fetchall()
         return {'items':[dict(r) for r in rows]}
 
 

@@ -20,7 +20,7 @@ class AppFlowTest {
             runBlocking { repo.dao.allNotices().isNotEmpty() }
         }
         val target = runBlocking { repo.dao.allNotices().first { it.hasWebUrl() } }
-        rule.onNodeWithText("竞赛", useUnmergedTree = true).performClick()
+        rule.onNodeWithTag("nav-0").performClick()
         rule.onNodeWithTag("search").performTextInput(target.title)
         rule.onNodeWithTag("search").performImeAction()
         rule.onNodeWithTag("feed_list").performScrollToNode(hasTestTag("notice-card-${target.id}"))
@@ -43,8 +43,8 @@ class AppFlowTest {
         rule.onNodeWithText("我的收藏").performClick()
         rule.onNodeWithText("我的收藏").assertIsDisplayed()
         rule.onNodeWithText(target.title).assertExists()
-        rule.onNodeWithText("首页", useUnmergedTree = true).performClick()
-        rule.onNodeWithText("竞赛日程").performScrollTo().performClick()
+        rule.onNodeWithTag("nav-1").performClick()
+        rule.onNodeWithText("日程提醒").performClick()
         rule.onNodeWithText("统一日程").assertIsDisplayed()
         rule.onNodeWithText("我的", useUnmergedTree = true).performClick()
         rule.onNodeWithText("设置与连接").performScrollTo().performClick()

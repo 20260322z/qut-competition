@@ -4,7 +4,6 @@ import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
-from bs4 import BeautifulSoup
 
 BASE_URL = 'https://chuangye.qut.edu.cn'
 LIST_URL = BASE_URL + '/index/sy/tzgg.htm'
@@ -30,6 +29,7 @@ def source_url(href, base):
 
 
 def parse_list(html, page_url=LIST_URL):
+    from bs4 import BeautifulSoup
     soup = BeautifulSoup(html, 'html.parser')
     links = []
     for a in soup.select('a[href]'):
@@ -119,6 +119,7 @@ def extract_deadline(body, published_at):
 
 
 def parse_notice(html, url):
+    from bs4 import BeautifulSoup
     soup = BeautifulSoup(html, 'html.parser')
     if '该内容已经被撤销' in soup.get_text():
         raise WithdrawnNotice('学校已撤销这条通知')

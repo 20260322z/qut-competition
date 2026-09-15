@@ -31,6 +31,8 @@ def initialize():
         CREATE TABLE IF NOT EXISTS contest_history(event TEXT NOT NULL,version INTEGER NOT NULL,data TEXT NOT NULL,created REAL NOT NULL,PRIMARY KEY(event,version));
         CREATE TABLE IF NOT EXISTS contest_follows(owner TEXT NOT NULL,contest TEXT NOT NULL,news INTEGER NOT NULL,deadline INTEGER NOT NULL,
           created REAL NOT NULL,PRIMARY KEY(owner,contest));
+        CREATE TABLE IF NOT EXISTS notice_contests(notice TEXT NOT NULL,contest TEXT NOT NULL,PRIMARY KEY(notice,contest));
+        CREATE TABLE IF NOT EXISTS contest_event_details(event TEXT PRIMARY KEY,data TEXT NOT NULL);
         ''')
         for item in REGISTRY:
             db.execute('INSERT OR IGNORE INTO contest_checks(id) VALUES (?)', (item['id'],))
@@ -142,9 +144,13 @@ def enqueue(db,event,owner,news,deadline):
               (key,owner,sub['email'],'明日事项：'+event['title'],s['scope']+' · '+s['stage']+'\n原文：'+s['evidence']+'\n'+event['url'],due,'deadline'))
 
 
-def save_event(contest,url,title,body,scope,alert=True):
+def save_event(contest,url,title,body,scope,alert=True,metadata=None):
     key=hashlib.sha256((contest+'|'+url).encode()).hexdigest()[:32]
-    digest=hashlib.sha256((title+'\n'+body).encode()).hexdigest();stamp=time.time()
+    if metadata is None:
+        with connect() as db:
+            saved=db.execute('SELECT data FROM contest_event_details WHERE event=?',(key,)).fetchone()
+        metadata=json.loads(saved['data']) if saved else {}
+    digest=hashlib.sha256(encode([title,body,scope,metadata]).encode()).hexdigest();stamp=time.time()
     with connect() as db:
         db.execute('BEGIN IMMEDIATE')
         old=db.execute('SELECT * FROM contest_events WHERE id=?',(key,)).fetchone()
@@ -153,22 +159,58 @@ def save_event(contest,url,title,body,scope,alert=True):
         event={'id':key,'contest':contest,'url':url,'title':title,'body':body,'scope':scope,'stages':encode(stages(body,scope)),
                'hash':digest,'version':version,'created':old['created'] if old else stamp,'updated':stamp}
         db.execute('INSERT OR REPLACE INTO contest_events VALUES (:id,:contest,:url,:title,:body,:scope,:stages,:hash,:version,:created,:updated)',event)
-        db.execute('INSERT INTO contest_history VALUES (?,?,?,?)',(key,version,encode(event),stamp))
+        db.execute('INSERT INTO contest_history VALUES (?,?,?,?)',(key,version,encode({**event,'metadata':metadata}),stamp))
         # Superseded deadlines must not remain queued.
         db.execute("UPDATE mail_queue SET status='cancelled' WHERE id LIKE ? AND status='pending'",(f'contest:%:{contest}:{key}:%',))
         for f in db.execute('SELECT * FROM contest_follows WHERE contest=?',(contest,)).fetchall():
             if alert and f['news']:notify(db,f['owner'],'赛事通知有变化',title,'contest:'+contest)
             enqueue(db,event,f['owner'],alert and f['news'],f['deadline'])
+        if metadata is not None:
+            db.execute('INSERT OR REPLACE INTO contest_event_details VALUES (?,?)',(key,encode(metadata)))
+    project_event(event,silent=not alert)
     return True
 
 
+def project_event(event,silent=False):
+    from .notice_projection import project_event as project
+    return project(event, INDEX, silent)
+
+
+def project_existing():
+    with connect() as db:
+        events=[dict(r) for r in db.execute('SELECT * FROM contest_events ORDER BY updated')]
+    for event in events: project_event(event,silent=True)
+
+
 def sync_school():
-    with connect() as db: rows=db.execute("SELECT * FROM notices WHERE source NOT LIKE 'QQ群%' ORDER BY updated_at DESC LIMIT 1000").fetchall()
+    with connect() as db: rows=db.execute("SELECT * FROM notices WHERE source='青岛理工大学创新创业学院' ORDER BY updated_at DESC LIMIT 1000").fetchall()
     for c in REGISTRY:
         with connect() as db: baseline=bool(db.execute('SELECT baseline FROM contest_checks WHERE id=?',(c['id'],)).fetchone()[0])
         for r in rows:
             if matches(c,r['title']):save_event(c['id'],r['url'],r['title'],r['body'],'青岛理工大学校内',baseline)
     with connect() as db:db.execute('UPDATE contest_checks SET baseline=1')
+
+
+def article_content(soup,url):
+    """Read article scope before removing navigation; never infer publication from deadlines."""
+    from .parser import source_url
+    publication=''
+    for selector in ('meta[property="article:published_time"]','meta[name="pubdate"]','meta[name="publishdate"]','time[datetime]'):
+        node=soup.select_one(selector)
+        raw=(node.get('content') or node.get('datetime') or '') if node else ''
+        match=re.search(r'20\d{2}[-/]\d{1,2}[-/]\d{1,2}',raw)
+        if match:
+            try: publication=datetime.strptime(match[0].replace('/','-'),'%Y-%m-%d').date().isoformat()
+            except ValueError: pass
+            if publication: break
+    main=soup.select_one('article, .v_news_content, #vsb_content, .article-content, .news-content, .TRS_Editor, .wp_articlecontent') or soup
+    attachments=[]
+    for a in main.select('a[href]'):
+        link=source_url(a.get('href',''),url)
+        if link and re.search(r'\.(pdf|docx?|xlsx?|zip|rar|pptx?)(?:$|\?)',link,re.I):
+            attachments.append({'name':a.get_text(' ',strip=True) or urlparse(link).path.split('/')[-1],'url':link})
+    for tag in main(['script','style','nav','header','footer']):tag.decompose()
+    return main.get_text('\n',strip=True)[:40000],{'published_at':publication,'attachments':attachments,'images':[]}
 
 
 def fetch(url,host):
@@ -190,33 +232,54 @@ def fetch(url,host):
     raise ValueError('redirect loop')
 
 
-def tick():
-    if not LOCK.acquire(False):return
+def sync_source(c):
+    with connect() as db:
+        db.execute('UPDATE contest_checks SET attempt=? WHERE id=?',(time.time(),c['id']))
+        initial=not bool(db.execute('SELECT success FROM contest_checks WHERE id=?',(c['id'],)).fetchone()[0])
+    try:
+        host=urlparse(c['notice_url']).hostname
+        soup,url=fetch(c['notice_url'],host)
+        if c['verification']!='verified' and not matches(c,soup.get_text(' ',strip=True)):
+            raise ValueError('identity_unconfirmed')
+        links={}
+        for a in soup.select('a[href]'):
+            title=a.get_text(' ',strip=True);link=urljoin(url,a['href']).split('#')[0]
+            if len(title)>=8 and re.search(r'通知|报名|规程|章程|竞赛规则|参赛须知',title) and urlparse(link).hostname==host and link!=url:
+                links[link]=title
+        collected=0
+        for link,title in list(links.items())[:8]:
+            try:
+                article,canonical=fetch(link,host)
+                body,metadata=article_content(article,canonical)
+                if sum(urlparse(x['notice_url']).hostname==host for x in REGISTRY)>1 and not matches(c,title+' '+body):
+                    continue
+                if len(body)>100:
+                    scope='赛事主办方（赛区适用范围请核对原文）' if c['verification']=='verified' else '目录候选来源（主办方身份仍待人工核验）'
+                    save_event(c['id'],canonical,title,body,scope,not initial,metadata)
+                    collected+=1
+            except Exception:continue
+        with connect() as db:
+            if collected:
+                db.execute('UPDATE contest_checks SET success=?,error=? WHERE id=?',(time.time(),'',c['id']))
+            else:
+                db.execute('UPDATE contest_checks SET error=? WHERE id=?',('网页可访问，但尚未成功解析通知正文；需动态适配或人工核对。',c['id']))
+        return {'id':c['id'],'collected':collected}
+    except Exception as exc:
+        message='来源页面身份尚未核实，暂不收录内容。' if str(exc)=='identity_unconfirmed' else '官网检查未成功，已有内容保留；将自动重试。'
+        with connect() as db:db.execute('UPDATE contest_checks SET error=? WHERE id=?',(message,c['id']))
+        return {'id':c['id'],'collected':0,'error':message}
+
+
+def tick(full=False):
+    if not LOCK.acquire(False):return {'busy':True}
     try:
         sync_school()
         with connect() as db:
-            candidates=[c for c in REGISTRY if c['verification']=='verified']
             checks={r['id']:r['attempt'] or 0 for r in db.execute('SELECT id,attempt FROM contest_checks')}
-        c=min(candidates,key=lambda v:checks[v['id']])
-        if checks[c['id']]>time.time()-3600:return
-        with connect() as db:db.execute('UPDATE contest_checks SET attempt=? WHERE id=?',(time.time(),c['id']))
-        try:
-            host=urlparse(c['notice_url']).hostname
-            soup,url=fetch(c['notice_url'],host)
-            links={}
-            for a in soup.select('a[href]'):
-                title=a.get_text(' ',strip=True);link=urljoin(url,a['href']).split('#')[0]
-                if len(title)>=12 and re.search(r'通知|报名|规程|章程|竞赛规则|参赛须知',title) and urlparse(link).hostname==host and link!=url:
-                    links[link]=title
-            with connect() as db: initial=not bool(db.execute('SELECT success FROM contest_checks WHERE id=?',(c['id'],)).fetchone()[0])
-            for link,title in list(links.items())[:8]:
-                try:
-                    article,_=fetch(link,host)
-                    for tag in article(['script','style','nav','header','footer']):tag.decompose()
-                    body=article.get_text('\n',strip=True)[:40000]
-                    if len(body)>100:save_event(c['id'],link,title,body,'赛事主办方（赛区适用范围请核对原文）',not initial)
-                except Exception:continue
-            with connect() as db:db.execute('UPDATE contest_checks SET success=?,error=? WHERE id=?',(time.time(),'' if links else '网页可访问，未发现可解析通知；可能需要动态页面或人工核对。',c['id']))
-        except Exception:
-            with connect() as db:db.execute('UPDATE contest_checks SET error=? WHERE id=?',('官网检查未成功，已有内容保留；将自动重试。',c['id']))
+        candidates=sorted([c for c in REGISTRY if c['verification']!='archived' and (full or checks[c['id']]<time.time()-3600)],key=lambda c:checks[c['id']])
+        # Cover the 84-entry directory in batches; historical sources stay visible but inactive.
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results=list(pool.map(sync_source,candidates if full else candidates[:8]))
+        return {'checked':len(results),'items':results,'archived':sum(c['verification']=='archived' for c in REGISTRY)}
     finally:LOCK.release()

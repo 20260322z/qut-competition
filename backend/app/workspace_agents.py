@@ -19,6 +19,7 @@ from .qq_review import authorized_headers, parse_model_json
 router = APIRouter(prefix='/api/v1/student/agents')
 LOCK = threading.Lock()
 KINDS = {
+    'grades': ('单科学业分析', ['核对学期与绩点', '逐门课程分析', '整理学习建议']),
     'resume': ('简历工作室', ['材料核对', '内容诊断', '逐段修改', '事实复核', '交付结果']),
     'interview': ('面试训练营', ['准备问题', '逐题练习', '综合复盘']),
     'contest': ('赛事解读', ['核对来源', '解读规则', '生成准备清单']),
@@ -88,6 +89,10 @@ def capabilities():
 
 @router.post('/runs')
 def create(body: CreateRun, owner=Depends(current_user)):
+    if body.kind == 'grades':
+        from .grade_analysis import prepare
+        try: prepare(body.text)
+        except (ValueError,TypeError,AttributeError) as exc: raise HTTPException(422,str(exc))
     if body.kind not in KINDS:
         raise HTTPException(422, '不支持这类任务，综测不在助手操作范围')
     if not body.consent:
@@ -274,6 +279,13 @@ def process_step(row):
         prior = {s['step']: json.loads(s['output']) for s in db.execute('SELECT * FROM agent_steps WHERE run=? AND output IS NOT NULL', (row['id'],))}
         turns = [dict(t) for t in db.execute('SELECT * FROM agent_turns WHERE run=? ORDER BY turn', (row['id'],))]
     context = {'materials': data, 'previous_results': prior, 'practice': turns}
+    if kind == 'grades':
+        from .grade_analysis import prepare, analyze
+        if stage == 0: return prepare(data['text']), 'queued'
+        if stage == 1: return analyze(prior[0],model_json), 'queued'
+        result=dict(prior[1])
+        result['tasks']=[{'title':'复习：'+g['course'],'note':'\n'.join(g['actions']),'due':''} for g in result['courses'][:30]]
+        return result,'completed'
     if kind == 'resume':
         if stage == 0:
             paragraphs = [p.strip() for p in data['text'].split('\n') if p.strip()]

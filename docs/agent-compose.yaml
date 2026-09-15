@@ -1,7 +1,7 @@
 services:
   api:
     build: ../backend
-    image: qut-competition-api:2.2.0
+    image: qut-competition-api:2.4.0
     container_name: qut-competition-api
     restart: unless-stopped
     ports:

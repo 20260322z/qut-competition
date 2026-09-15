@@ -41,7 +41,8 @@ data class Notice(
     val attachments: String,
     val images: String,
     val updatedAt: String,
-    val source: String
+    val source: String,
+    @ColumnInfo(defaultValue = "'[]'") val contestIds: String = "[]"
 )
 
 @Entity(tableName = "user_states")
@@ -75,11 +76,15 @@ interface NoticeDao {
     suspend fun notice(id: String): Notice?
     @Query("SELECT * FROM user_states WHERE id=:id")
     suspend fun state(id: String): UserState?
+    @Query("DELETE FROM user_states WHERE id IN (:ids)")
+    suspend fun deleteStates(ids: List<String>)
+    @Query("DELETE FROM notices WHERE id IN (:ids)")
+    suspend fun deleteNotices(ids: List<String>)
     @Upsert suspend fun saveNotices(notices: List<Notice>)
     @Upsert suspend fun saveState(state: UserState)
 }
 
-@Database(entities = [Notice::class, UserState::class], version = 2, exportSchema = false)
+@Database(entities = [Notice::class, UserState::class], version = 3, exportSchema = false)
 abstract class QutDatabase : RoomDatabase() { abstract fun dao(): NoticeDao }
 
 data class Settings(
@@ -122,6 +127,12 @@ class Repository(private val context: Context) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE user_states ADD COLUMN changeSummary TEXT NOT NULL DEFAULT ''")
             }
+        }, object : androidx.room.migration.Migration(2, 3) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE notices ADD COLUMN contestIds TEXT NOT NULL DEFAULT '[]'")
+                db.execSQL("DELETE FROM user_states WHERE id IN (SELECT id FROM notices WHERE source LIKE 'QQ群%' OR url LIKE 'qq://%')")
+                db.execSQL("DELETE FROM notices WHERE source LIKE 'QQ群%' OR url LIKE 'qq://%'")
+            }
         }).build()
     val dao = db.dao()
     private val prefs = context.preferenceStore
@@ -153,7 +164,7 @@ class Repository(private val context: Context) {
     }
     val items: Flow<List<NoticeItem>> = combine(dao.observeNotices(), dao.observeStates()) { notices, states ->
         val index = states.associateBy { it.id }
-        notices.map { NoticeItem(it, index[it.id] ?: UserState(it.id)) }
+        notices.filter { it.isOfficial() && !it.url.startsWith("qq://") }.map { NoticeItem(it, index[it.id] ?: UserState(it.id)) }
     }
 
     suspend fun editState(id: String, edit: (UserState) -> UserState) = stateMutex.withLock {
@@ -201,6 +212,8 @@ class Repository(private val context: Context) {
         val originals = dao.allNotices().associateBy { it.id }
         val previous = originals.keys
         val received = mutableListOf<Notice>()
+        val deleted = mutableSetOf<String>()
+        val silent = mutableSetOf<String>()
         var page = 1
         var before = ""
         var total: Int
@@ -212,8 +225,13 @@ class Repository(private val context: Context) {
             val result = getJson(url.build().toString())
             if (before.isEmpty()) before = result.getString("sync_before")
             total = result.getInt("total")
+            result.optJSONArray("deleted_ids")?.let { values -> for (i in 0 until values.length()) deleted += values.getString(i) }
             val array = result.getJSONArray("items")
-            for (i in 0 until array.length()) received += parseNotice(array.getJSONObject(i))
+            for (i in 0 until array.length()) {
+                val row=array.getJSONObject(i)
+                received += parseNotice(row)
+                if(row.optInt("silent_import")==1)silent+=row.getString("id")
+            }
             require(array.length() > 0 || received.size >= total) { "同步数据不完整，请重试" }
             page++
         } while (received.size < total && page <= 100)
@@ -228,7 +246,12 @@ class Repository(private val context: Context) {
             }
             if (changes.isNotEmpty()) editState(fresh.id) { it.copy(changeSummary = changes.joinToString("；")) }
         }
-        dao.saveNotices(received)
+        db.withTransaction {
+            dao.deleteStates(deleted.toList())
+            dao.deleteNotices(deleted.toList())
+            dao.saveNotices(received.filter { it.isOfficial() && it.id !in deleted })
+        }
+        for(id in deleted) Reminders.schedule(context,id)
         val sources = runCatching {
             getJson(config.server + "/api/v1/sources").getJSONArray("items")
         }.getOrNull()
@@ -243,7 +266,7 @@ class Repository(private val context: Context) {
                             it[qqSuccessKey] = source.nullableString("last_success") ?: ""
                             it[qqErrorKey] = source.nullableString("last_error") ?: ""
                         }
-                        else -> {
+                        "qut" -> {
                             it[sourceSuccessKey] = source.nullableString("last_success") ?: ""
                             it[sourceErrorKey] = source.nullableString("last_error") ?: ""
                         }
@@ -252,15 +275,29 @@ class Repository(private val context: Context) {
             }
         }
         for (state in dao.reminders()) Reminders.schedule(context, state.id)
-        SyncResult(received.filter { it.id !in previous }, config.syncCursor.isEmpty(), dao.allNotices().size)
+        SyncResult(received.filter { it.id !in previous && it.id !in deleted && it.id !in silent && it.isOfficial() }, config.syncCursor.isEmpty(), dao.allNotices().size)
     } }
 
     private val zhcpClient = OkHttpClient.Builder().connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(300, TimeUnit.SECONDS).callTimeout(330, TimeUnit.SECONDS).build()
 
+    suspend fun transcriptFromSession():List<Grade> = withContext(Dispatchers.IO) {
+        val config=settings.first()
+        require(config.zhcpToken.isNotBlank() && config.zhcpRole=="student"){"请先在综测系统中使用学生身份登录教务"}
+        val req=Request.Builder().url("$DEFAULT_ZHCP/app/academic/my-transcript")
+            .header("Authorization","Bearer ${config.zhcpToken}")
+            .post("{\"consent\":true}".toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+        zhcpClient.newCall(req).execute().use { response ->
+            require(response.isSuccessful){"教务读取暂时失败，请稍后重试"}
+            val result=JSONObject(response.body?.string()?:error("没有返回成绩"))
+            require(result.optInt("code")==200){result.optString("msg","请重新登录综测后重试")}
+            parseAcademicTranscript(result.getJSONObject("data").getJSONArray("items"))
+        }
+    }
+
     suspend fun transcriptPreview(account: String, password: String): String = withContext(Dispatchers.IO) {
         val config = settings.first()
-        require(config.zhcpToken.isNotBlank() && config.zhcpRole == "student") { "请先在学业 → 综测中登录本人学生账号" }
+        require(config.zhcpToken.isNotBlank() && config.zhcpRole == "student") { "请先在工作台 → 综测系统中登录本人学生账号" }
         val body = JSONObject().put("account", account).put("password", password).put("consent", "true")
         val request = Request.Builder().url("$DEFAULT_ZHCP/app/academic/transcript")
             .header("Authorization", "Bearer ${config.zhcpToken}")
@@ -364,7 +401,7 @@ class Repository(private val context: Context) {
             j.getString("id"), j.getString("url"), j.getString("title"), j.getString("published_at"),
             j.getString("category"), j.getString("summary"), j.getString("body"), j.nullableString("deadline"),
             j.nullableString("deadline_evidence"), j.optJSONArray("attachments")?.toString() ?: "[]",
-            j.optJSONArray("images")?.toString() ?: "[]", j.getString("updated_at"), j.getString("source")
+            j.optJSONArray("images")?.toString() ?: "[]", j.getString("updated_at"), j.getString("source"), j.optJSONArray("contest_ids")?.toString() ?: "[]"
         )
     }
 }

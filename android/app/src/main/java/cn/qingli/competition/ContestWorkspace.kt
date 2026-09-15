@@ -17,30 +17,6 @@ import org.json.JSONObject
 fun sourceStatus(v:String)=when(v){"verified"->"已核对来源";"archived"->"历史来源";else->"待核验来源"}
 
 @Composable
-fun ContestWorkspace(repo:StudentRepository) {
-    var query by rememberSaveable{mutableStateOf("")}
-    var onlyFollowed by rememberSaveable{mutableStateOf(false)}
-    var selected by rememberSaveable{mutableStateOf("")}
-    var rows by remember{mutableStateOf(JSONArray(repo.context.assets.open("contest_sources.json").bufferedReader().use{it.readText()}).objects())}
-    var error by remember{mutableStateOf("")}
-    suspend fun refresh(){rows=repo.api("contests").getJSONArray("items").objects();error=""}
-    LaunchedEffect(Unit){runCatching{refresh()}.onFailure{error="当前展示本机来源档案；联网后更新关注和通知。"}}
-    if(selected.isNotBlank()){
-        BackHandler{selected=""}
-        ContestDetail(repo,selected,rows.firstOrNull{it.optString("id")==selected}?:JSONObject()){selected=""}
-    }else StudentPage("赛事中心","84 项目录 · 官网、通知与准备放在一起"){
-        OutlinedTextField(query,{query=it},label={Text("搜索赛事名称、简称或旧名")},modifier=Modifier.fillMaxWidth(),singleLine=true)
-        StudentTabs(listOf("全部赛事","我的关注"),if(onlyFollowed)1 else 0){onlyFollowed=it==1}
-        OnlineAction("更新赛事信息"){refresh();"已更新"}
-        if(error.isNotBlank())Text(error,fontSize=12.sp,color=IosMuted)
-        val visible=rows.filter{(!onlyFollowed||it.optJSONObject("follow")!=null)&&(query.isBlank()||it.toString().contains(query,true))}
-        Text("${visible.size} 项 · 目录版本 2023，学校认定须另行核对",fontSize=12.sp,color=IosMuted)
-        IosGroup{visible.forEachIndexed{i,c->IosRow(c.optString("current_name").ifBlank{c.optString("name")},"${sourceStatus(c.optString("verification"))} · ${c.optInt("notice_count")} 条已收录通知",Icons.Outlined.EmojiEvents,divider=i<visible.lastIndex){selected=c.getString("id")}}}
-        if(visible.isEmpty())StudentCard("这里还没有赛事","可以搜索其他名称，或打开赛事详情关注。")
-    }
-}
-
-@Composable
 fun ContestDetail(repo:StudentRepository,id:String,initial:JSONObject,back:()->Unit){
     var data by remember(id){mutableStateOf(initial)}
     var page by rememberSaveable(id){mutableIntStateOf(0)}
@@ -58,7 +34,7 @@ fun ContestDetail(repo:StudentRepository,id:String,initial:JSONObject,back:()->U
     }
     Column(Modifier.fillMaxSize()){
         AgentHeader("赛事详情",name,back)
-        StudentTabs(listOf("概览","通知","组队","经验","资料"),page){page=it;repo.context.getSharedPreferences("student_filters",0).edit().putString("contest",data.optString("name")).apply()}
+        Text("相关通知请在首页使用赛事筛选查看",modifier=Modifier.padding(horizontal=16.dp),fontSize=12.sp,color=IosMuted)
         when(page){
             0 -> StudentPage(""){
                 Text(name,fontSize=21.sp,fontWeight=FontWeight.Bold)
@@ -87,14 +63,7 @@ fun ContestDetail(repo:StudentRepository,id:String,initial:JSONObject,back:()->U
                 OnlineAction("刷新本页"){refresh();"已更新"}
                 if(error.isNotBlank())Text(error,color=MaterialTheme.colorScheme.error)
             }
-            1 -> StudentPage("相关通知","校内与主办方通知分别标注，日期不混用"){
-                val events=data.optJSONArray("events")?.objects()?:emptyList()
-                if(events.isEmpty())StudentCard("尚未收录本届通知","可先查看来源入口并关注，采集成功后会在这里展示。")
-                events.forEach{e->StudentCard(e.optString("title"),"${e.optString("scope")} · 第 ${e.optInt("version")} 版",onClick={event=e})}
-            }
-            2 -> Column{TextButton(onClick={agent="team"}){Text("让助手整理招募要求")};CommunityScreen(repo,true)}
-            3 -> Column{TextButton(onClick={agent="experience"}){Text("让助手整理参赛经验")};CommunityScreen(repo,false)}
-            else -> ResourceScreen(repo,true,null,embedded=true)
+
         }
     }
     event?.let{e->AlertDialog(onDismissRequest={event=null},title={Text(e.optString("title"))},text={

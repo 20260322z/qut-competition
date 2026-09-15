@@ -35,7 +35,7 @@ fun readBounded(context: android.content.Context, uri: Uri, max: Int = 10*1024*1
 }
 
 @Composable
-fun ResourceScreen(repo: StudentRepository, public: Boolean, back:(()->Unit)?, embedded:Boolean=false) {
+fun ResourceScreen(repo: StudentRepository, public: Boolean, back:(()->Unit)?, embedded:Boolean=false, uploadOnly:Boolean=false) {
     var reading by remember{mutableStateOf<JSONObject?>(null)}
     if(reading!=null){androidx.activity.compose.BackHandler{reading=null};LibraryReader(repo,reading!!,public){reading=null};return}
     var query by rememberSaveable{mutableStateOf("")};var list by remember{mutableStateOf<List<JSONObject>>(emptyList())}
@@ -56,27 +56,24 @@ fun ResourceScreen(repo: StudentRepository, public: Boolean, back:(()->Unit)?, e
         }
     }
     suspend fun refresh(){list=repo.api("${if(public)"resources" else "files"}?q=${java.net.URLEncoder.encode(query,"UTF-8")}").getJSONArray("items").objects()}
-    LaunchedEffect(public){runCatching{refresh()}.onFailure{error=it.message?:"读取失败"}}
-    StudentPage(if(embedded)"" else if(public)"公共资料" else "私人文件","单文件 10 MB，个人空间 200 MB；下载完成后才可离线使用",back) {
-        OutlinedTextField(query,{query=it},label={Text("课程 / 赛事 / 年份 / 关键词")},modifier=Modifier.fillMaxWidth())
-        OnlineAction("搜索 / 刷新"){refresh();"已加载 ${list.size} 个文件"}
-        if(error.isNotBlank())Text(error)
-        list.forEach{f->StudentCard(f.optString("name"),"${f.optLong("size")/1024} KB · ${f.optJSONObject("data")?.optString("category")?:""}\n${f.optJSONObject("data")?.optString("context")?:""}",actions={
-            TextButton(onClick={reading=f}){Text("预览、阅读与智能解读")}
+    LaunchedEffect(public,query){kotlinx.coroutines.delay(300);runCatching{refresh()}.onSuccess{error=""}.onFailure{error=it.message?:"读取失败"}}
+    StudentPage(if(uploadOnly)"上传资料" else if(embedded)"" else if(public)"公共资料" else "私人文件",if(uploadOnly)"单文件 10 MB，个人空间 200 MB" else "",back) {
+        if(!uploadOnly) {
+        FileSpaceReference(public,list,query,{query=it},{scope.launch{runCatching{refresh()}.onSuccess{error=""}.onFailure{error=it.message?:"加载失败"}}},{reading=it}){f->
+            TextButton(onClick={reading=f}){Text("打开阅读")}
             OutlinedButton(onClick={selected=f;saver.launch(f.getString("name"))}){Text("下载到手机")}
             if(!public){
-                val currentlyPublic=f.optInt("public")==1
-                Text(if(currentlyPublic)"当前公开" else "当前仅自己可见")
-                if(currentlyPublic)OnlineAction("取消公开"){repo.api("files/${f.getString("id")}/sharing","PUT",JSONObject().put("public",false));refresh();"已停止新的公开下载；他人已下载的副本无法收回"}
+                if(f.optInt("public")==1)OnlineAction("取消公开"){repo.api("files/${f.getString("id")}/sharing","PUT",JSONObject().put("public",false));refresh();"已取消公开"}
                 else TextButton(onClick={shareExisting=f}){Text("公开分享")}
                 TextButton(onClick={deleting=f}){Text("删除文件")}
-            } else TextButton(onClick={reporting=f}){Text("举报资料问题")}
-        })}
-        if(list.isEmpty())Text("当前没有相关资料。未上传的文件不会出现在公共空间。")
-        Text("上传资料",style=MaterialTheme.typography.titleLarge)
+            }else TextButton(onClick={reporting=f}){Text("举报资料问题")}
+        }
+        if(error.isNotBlank())Text(error)
+        }
+        if(uploadOnly) {
+        if(error.isNotBlank())Text(error)
         OutlinedButton(onClick={picker.launch(arrayOf("application/pdf","text/plain","application/zip","image/*","application/vnd.openxmlformats-officedocument.wordprocessingml.document","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))}){Text(if(uri==null)"选择文件" else "重新选择：$name")}
-        OutlinedTextField(category,{category=it},label={Text("分类 / 课程")},modifier=Modifier.fillMaxWidth())
-        OutlinedTextField(relation,{relation=it},label={Text("学校、专业、赛事或年份")},modifier=Modifier.fillMaxWidth())
+        UnifiedDraftEditor(listOf("context" to "介绍一下这份资料","category" to "课程 / 分类"),mapOf("context" to relation,"category" to category)){relation=it["context"].orEmpty();category=it["category"].orEmpty()}
         Row{Checkbox(share,{share=it;consent=false});Text("主动公开分享此文件")}
         if(share)Row{Checkbox(consent,{consent=it});Text("已预览原文件，确认有权分享，且无成绩单、学号、联系方式等私人内容")}
         if(uri!=null)OnlineAction(if(share)"上传并公开分享" else "上传到私人空间"){
@@ -86,6 +83,7 @@ fun ResourceScreen(repo: StudentRepository, public: Boolean, back:(()->Unit)?, e
                 .put("category",category).put("context",relation).put("public",share).put("rights_confirmed",consent))
             refresh();uri=null; if(result.optBoolean("duplicate"))"检测到相同文件，保留原记录与分享状态" else "上传成功"
         }
+    }
     }
     deleting?.let{f->AlertDialog(onDismissRequest={deleting=null},title={Text("删除文件？")},text={Text(f.optString("name")+"\n云端文件删除后不能继续下载，已下载副本不会删除。")},confirmButton={TextButton(onClick={scope.launch{runCatching{repo.api("files/${f.getString("id")}","DELETE");refresh()}.onFailure{error=it.message?:"删除失败"};deleting=null}}){Text("确认删除")}},dismissButton={TextButton(onClick={deleting=null}){Text("保留")}})}
     shareExisting?.let{f->AlertDialog(onDismissRequest={shareExisting=null},title={Text("确认公开分享")},text={Text("${f.optString("name")}\n确认已经查看原文件、有权分享，且不含成绩单、学号或联系方式等私人信息。公开后其他人可以下载。")},confirmButton={TextButton(onClick={scope.launch{runCatching{repo.api("files/${f.getString("id")}/sharing","PUT",JSONObject().put("public",true).put("rights_confirmed",true));refresh()}.onFailure{error=it.message?:"分享失败"};shareExisting=null}}){Text("确认并公开")}},dismissButton={TextButton(onClick={shareExisting=null}){Text("保持私有")}})}

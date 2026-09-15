@@ -54,7 +54,7 @@ def sync(full=False, revisit=False):
                 time.sleep(0.6)
             if revisit:
                 with connect() as db:
-                    for row in db.execute('SELECT url FROM notices WHERE deadline IS NOT NULL AND deadline >= ?',
+                    for row in db.execute("SELECT url FROM notices WHERE source='青岛理工大学创新创业学院' AND deadline IS NOT NULL AND deadline >= ?",
                                           (datetime.now(timezone.utc).isoformat(),)):
                         if row['url'] not in urls:
                             urls.append(row['url'])

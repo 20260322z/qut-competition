@@ -16,7 +16,7 @@ from . import student_store, student_api, student_mail, student_ai, student_coll
 from . import workspace_agents, workspace_files, workspace_contests
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s %(message)s')
-APP_VERSION = '2.2.0'
+APP_VERSION = '2.4.0'
 
 
 def authorized_napcat(authorization: str | None, access_token: str | None,
@@ -40,16 +40,15 @@ async def lifespan(app):
     workspace_agents.initialize()
     workspace_files.initialize()
     workspace_contests.initialize()
+    from .notice_migration import retire_qq
+    retire_qq()
+    workspace_contests.project_existing()
     scheduler = BackgroundScheduler(timezone='Asia/Shanghai')
     if os.getenv('DISABLE_SCHEDULER') != '1':
         scheduler.add_job(crawler.sync, 'interval', hours=1, id='hourly',
                           next_run_time=datetime.now(timezone.utc), max_instances=1, coalesce=True)
         scheduler.add_job(crawler.sync, 'cron', hour=5, minute=15,
                           kwargs={'revisit': True}, id='revisit', max_instances=1, coalesce=True)
-        scheduler.add_job(qq_ingest.poll, 'interval', minutes=3, id='qq-poll',
-                          max_instances=1, coalesce=True)
-        scheduler.add_job(qq_review.review, 'interval', minutes=15, id='qq-review',
-                          next_run_time=datetime.now(timezone.utc), max_instances=1, coalesce=True)
         scheduler.start()
         scheduler.add_job(student_mail.tick, 'interval', seconds=30, id='student-mail', max_instances=1, coalesce=True)
         scheduler.add_job(student_ai.tick, 'interval', seconds=10, id='student-ai', max_instances=1, coalesce=True)
@@ -83,8 +82,8 @@ def health():
 @app.get('/api/v1/notices')
 def notices(q: str = Query('', max_length=100), category: str = '', source: str = '',
             page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
-            updated_since: datetime | None = None, sync_before: datetime | None = None):
-    conditions, values = [], []
+            updated_since: datetime | None = None, sync_before: datetime | None = None, contest: str = ''):
+    conditions, values = ["source NOT LIKE 'QQ群%'", "url NOT LIKE 'qq://%'"], []
     if q:
         conditions.append("(title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\')")
         escaped = q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
@@ -96,6 +95,9 @@ def notices(q: str = Query('', max_length=100), category: str = '', source: str 
         conditions.append("source NOT LIKE 'QQ群%'")
     elif source in ('qq', 'QQ群'):
         conditions.append("source LIKE 'QQ群%'")
+    if contest:
+        conditions.append('id IN (SELECT notice FROM notice_contests WHERE contest=?)')
+        values.append(contest)
     if updated_since:
         conditions.append('updated_at > ?')
         values.append(updated_since.astimezone(timezone.utc).isoformat(timespec='microseconds'))
@@ -107,7 +109,8 @@ def notices(q: str = Query('', max_length=100), category: str = '', source: str 
         total = db.execute('SELECT COUNT(*) FROM notices' + where, values).fetchone()[0]
         rows = db.execute('SELECT * FROM notices' + where + ' ORDER BY published_at DESC, id DESC LIMIT ? OFFSET ?',
                           values + [page_size, (page - 1) * page_size]).fetchall()
-    return {'items': [public_notice(row) for row in rows], 'total': total,
+        deleted = [r['id'] for r in db.execute('SELECT id FROM notice_deletions WHERE deleted_at<=?', (before,))]
+    return {'items': [public_notice(row) for row in rows], 'deleted_ids': deleted, 'total': total,
             'page': page, 'page_size': page_size, 'sync_before': before}
 
 
@@ -115,7 +118,7 @@ def notices(q: str = Query('', max_length=100), category: str = '', source: str 
 def notice(notice_id: str):
     with connect() as db:
         row = db.execute('SELECT * FROM notices WHERE id=?', (notice_id,)).fetchone()
-    if row is None:
+    if row is None or row['source'].startswith('QQ群') or row['url'].startswith('qq://'):
         raise HTTPException(status_code=404, detail='通知不存在')
     return public_notice(row)
 
@@ -124,29 +127,21 @@ def notice(notice_id: str):
 def sources():
     with connect() as db:
         official = dict(db.execute("SELECT * FROM source_state WHERE id='qut'").fetchone())
-        qq = dict(db.execute("SELECT * FROM source_state WHERE id='qq'").fetchone())
-        official_count = db.execute("SELECT COUNT(*) FROM notices WHERE source NOT LIKE 'QQ群%'").fetchone()[0]
-        qq_count = db.execute("SELECT COUNT(*) FROM notices WHERE source LIKE 'QQ群%'").fetchone()[0]
-        pending = db.execute(
-            "SELECT COUNT(*) FROM qq_messages WHERE regex_matched=1 AND review_status IN ('pending', 'error')"
-        ).fetchone()[0]
+        official_count = db.execute("SELECT COUNT(*) FROM notices WHERE source='青岛理工大学创新创业学院'").fetchone()[0]
+        checks = [dict(r) for r in db.execute('SELECT * FROM contest_checks')]
+        contest_count = db.execute("SELECT COUNT(*) FROM notices WHERE source LIKE '赛事%'").fetchone()[0]
     official.update(name='学校创新创业学院', url=LIST_URL, notice_count=official_count, interval_minutes=60)
-    qq.update(name='QQ竞赛群', mode='napcat', notice_count=qq_count,
-              pending_review=pending, interval_minutes=15)
-    return {'items': [official, qq], 'reference': {
-        'name': '微信参考文章', 'mode': 'external_link',
-        'url': 'https://mp.weixin.qq.com/s/BvhMwEWH8_bJdys8FNIByw'}}
+    latest = max((r['success'] or 0 for r in checks), default=0)
+    registry = {'id':'contests','name':'84项赛事来源','notice_count':contest_count,
+        'last_success': datetime.fromtimestamp(latest,timezone.utc).isoformat() if latest else None,
+        'last_error':None,'interval_minutes':60,'directory_count':len(workspace_contests.REGISTRY),
+        'successful_sources':sum(bool(r['success']) and not bool(r['error']) for r in checks),
+        'failed_sources':sum(bool(r['error']) for r in checks)}
+    return {'items':[official,registry]}
 
 
 @app.post('/internal/qq/event')
 async def qq_event(request: Request, authorization: str | None = Header(default=None),
                    access_token: str | None = Query(default=None),
                    x_signature: str | None = Header(default=None)):
-    body = await request.body()
-    if not authorized_napcat(authorization, access_token, x_signature, body):
-        logging.getLogger('qut.qq').warning(
-            'QQ webhook rejected headers=%s',
-            sorted(k.lower() for k in request.headers.keys()))
-        raise HTTPException(status_code=403, detail='无权上报')
-    payload = json.loads(body or b'{}')
-    return qq_ingest.handle_event(payload)
+    raise HTTPException(status_code=410, detail='QQ群通知采集已停用')

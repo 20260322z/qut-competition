@@ -122,6 +122,7 @@ def mark(row_id, status, reason, notice_id=None):
 
 
 def review(limit=15):
+    return {'disabled': True, 'reason': 'QQ群通知来源已停用'}
     if not LOCK.acquire(blocking=False):
         return {'skipped': True}
     accepted, rejected, failed = 0, 0, 0

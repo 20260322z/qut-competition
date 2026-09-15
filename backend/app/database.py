@@ -70,6 +70,8 @@ def initialize():
         columns = {row[1] for row in db.execute('PRAGMA table_info(notices)')}
         if 'source' not in columns:
             db.execute("ALTER TABLE notices ADD COLUMN source TEXT NOT NULL DEFAULT '青岛理工大学创新创业学院'")
+        if 'silent_import' not in columns:
+            db.execute('ALTER TABLE notices ADD COLUMN silent_import INTEGER NOT NULL DEFAULT 0')
         db.execute("CREATE INDEX IF NOT EXISTS notices_source ON notices(source)")
 
 
@@ -95,4 +97,7 @@ def public_notice(row):
     item['source'] = item.get('source') or '青岛理工大学创新创业学院'
     for field in ('attachments', 'images'):
         item[field] = json.loads(item[field])
+    with connect() as db:
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        item['contest_ids'] = [r[0] for r in db.execute('SELECT contest FROM notice_contests WHERE notice=?', (item['id'],))] if 'notice_contests' in tables else []
     return item

@@ -19,6 +19,20 @@ def account(name='student'):
     return {'Authorization':f'Bearer {token}'}
 
 
+def test_publication_feeds_and_my_profile_share_same_records(client):
+    a,b=account('publisher-a'),account('publisher-b')
+    team={'contest':'全国大学生数学建模竞赛','title':'合成测试招募','track':'本科组','capacity':3,'roles':'Python 数据分析','schedule':'每周周末'}
+    r=client.post('/api/v1/student/teams',headers=a,json=team);assert r.status_code==200,r.text
+    key=r.json()['id']
+    post={ 'contest':team['contest'],'title':'合成经验分享','year':'2026','body':'从历年题目开始复盘，记录分工和遇到的问题。'}
+    r=client.post('/api/v1/student/posts',headers=a,json=post);assert r.status_code==200,r.text
+    pkey=r.json()['id']
+    assert key in [x['id'] for x in client.get('/api/v1/student/teams?q=Python').json()['items']]
+    assert key in [x['id'] for x in client.get('/api/v1/student/teams/mine',headers=a).json()['items']]
+    assert pkey in [x['id'] for x in client.get('/api/v1/student/posts?mine=true',headers=a).json()['items']]
+    assert client.get('/api/v1/student/posts?mine=true',headers=b).json()['items']==[]
+
+
 @pytest.fixture
 def smtp(monkeypatch):
     for key in ('SMTP_HOST','SMTP_USER','SMTP_PASSWORD','SMTP_FROM'):

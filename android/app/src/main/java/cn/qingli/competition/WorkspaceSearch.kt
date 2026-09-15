@@ -28,7 +28,7 @@ fun WorkspaceSearch(repo:StudentRepository,records:List<StudentRecord>,notices:L
     StudentPage("搜索工作台","本机内容即时搜索，云端搜索仅返回你有权访问的内容",back){
         OutlinedTextField(query,{query=it.take(100)},label={Text("赛事、通知、课程、资料或经历关键词")},modifier=Modifier.fillMaxWidth(),singleLine=true)
         if(query.isNotBlank()){
-            val matched=catalog.filter{it.optString("name").contains(query,true)||it.optString("current_name").contains(query,true)||it.optJSONArray("aliases").toString().contains(query,true)}
+            val matched=catalog.filter{it.optString("name").contains(query,true)||it.optString("current_name").contains(query,true)||it.optJSONArray("aliases")?.toString().orEmpty().contains(query,true)}
             if(matched.isNotEmpty()){
                 IosSection("赛事 · ${matched.size}")
                 matched.take(12).forEach{c->StudentCard(c.optString("current_name").ifBlank{c.optString("name")},sourceStatus(c.optString("verification")),onClick={contest=c.optString("id")})}

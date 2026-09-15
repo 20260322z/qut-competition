@@ -55,11 +55,16 @@ object Reminders {
 
     suspend fun schedule(context: Context, id: String) {
         val repo = context.repository()
-        val state = repo.dao.state(id) ?: return
-        val notice = repo.dao.notice(id) ?: return
-        val deadline = NoticeItem(notice, state).deadlineMillis
         val work = WorkManager.getInstance(context)
         val key = "deadline-$id"
+        val state = repo.dao.state(id)
+        val notice = repo.dao.notice(id)
+        if(state==null || notice==null || !notice.isOfficial()) {
+            work.cancelUniqueWork(key)
+            androidx.core.app.NotificationManagerCompat.from(context).cancel(id.hashCode())
+            return
+        }
+        val deadline = NoticeItem(notice, state).deadlineMillis
         if (!state.reminder || deadline == null || deadline <= System.currentTimeMillis()) {
             work.cancelUniqueWork(key)
             return

@@ -25,6 +25,18 @@ interface StudentDao {
     @Query("SELECT * FROM records WHERE kind=:kind AND id=:id") suspend fun get(kind: String, id: String): StudentRecord?
     @Upsert suspend fun put(record: StudentRecord)
     @Query("DELETE FROM records WHERE kind=:kind AND id=:id") suspend fun delete(kind: String, id: String)
+    @Query("SELECT * FROM records WHERE kind='grade'") suspend fun grades():List<StudentRecord>
+    @Transaction suspend fun replaceGrades(incoming:List<StudentRecord>){
+        require(incoming.isNotEmpty() && incoming.all{it.kind=="grade"})
+        val before=grades().associateBy{it.id};val after=incoming.associateBy{it.id}
+        require(after.size==incoming.size){"成绩包含重复课程，未保存"}
+        val snapshot=JSONArray()
+        (before.keys+after.keys).forEach{id->
+            snapshot.put(JSONObject().put("id",id).put("before",before[id]?.json?:JSONObject.NULL).put("after",after[id]?.json?:JSONObject.NULL))
+            if(id in after)put(after.getValue(id)) else delete("grade",id)
+        }
+        put(StudentRecord("draft","grade-import-backup",JSONObject().put("rows",snapshot).toString()))
+    }
     @Transaction suspend fun mergeGrades(incoming:List<StudentRecord>){
         val snapshot=JSONArray()
         incoming.forEach{r->
@@ -36,7 +48,7 @@ interface StudentDao {
     }
     @Transaction suspend fun undoGradeImport(){
         val snapshot=get("draft","grade-import-backup")?.data()?.getJSONArray("rows")?.objects()?:error("没有可撤销的导入")
-        snapshot.forEach{r->require(get("grade",r.getString("id"))?.json==r.getString("after")){"导入后有课程被修改，为保护新记录请先手动核对"}}
+        snapshot.forEach{r->require(get("grade",r.getString("id"))?.json==(if(r.isNull("after"))null else r.getString("after"))){"导入后有课程被修改，为保护新记录请先手动核对"}}
         snapshot.forEach{r->if(r.isNull("before"))delete("grade",r.getString("id")) else put(StudentRecord("grade",r.getString("id"),r.getString("before")))}
         delete("draft","grade-import-backup")
     }
@@ -154,7 +166,7 @@ data class GradeSummary(val credits: Double, val average: Double?, val gpa: Doub
 fun summarizeGrades(grades: List<Grade>): GradeSummary {
     val valid = grades.filter { it.included }
     val credits = valid.sumOf { it.credits }
-    val gp = valid.filter { it.gpa != null }
+    val gp = grades.filter { it.status=="正常" && it.credits>0 && it.gpa!=null && it.gpa.isFinite() }
     val gpCredits = gp.sumOf { it.credits }
     return GradeSummary(credits, if (credits > 0) valid.sumOf { it.score!! * it.credits } / credits else null,
         if (gpCredits > 0) gp.sumOf { it.gpa!! * it.credits } / gpCredits else null, gpCredits, grades.size - valid.size)

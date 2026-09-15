@@ -143,6 +143,7 @@ def store_candidate(item):
 
 
 def handle_event(event):
+    return {'disabled': True, 'reason': 'QQ群通知来源已停用'}
     item = normalize_event(event)
     if item is None:
         return {'ignored': True}
@@ -169,6 +170,7 @@ def napcat_call(client, action, payload=None):
 
 
 def poll():
+    return {'disabled': True, 'reason': 'QQ群通知来源已停用'}
     if not LOCK.acquire(blocking=False):
         return {'skipped': True}
     stored, matched, errors = 0, 0, []

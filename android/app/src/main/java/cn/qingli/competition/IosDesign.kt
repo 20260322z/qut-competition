@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -33,8 +34,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 // iOS reference rhythm, adapted to Android fonts, insets and 48 dp touch targets.
-val IosBlue = Color(0xFF007AFF)
-val IosBackground = Color(0xFFF2F2F7)
+val IosBlue = Color(0xFF2563EB)
+val IosBackground = Color(0xFFF5F7FA)
 val IosInk = Color(0xFF1C1C1E)
 val IosMuted = Color(0xFF68686F)
 val IosSeparator = Color(0xFFE5E5EA)
@@ -78,10 +79,18 @@ fun IosTabBar(selected: Int, select: (Int)->Unit) {
         Column {
             HorizontalDivider(thickness=.5.dp,color=IosSeparator)
             Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal=6.dp,vertical=4.dp)) {
-                listOf("首页" to Icons.Outlined.Home,"学业" to Icons.Outlined.School,"竞赛" to Icons.Outlined.EmojiEvents,
-                    "升学" to Icons.Outlined.AutoStories,"我的" to Icons.Outlined.PersonOutline).forEachIndexed { index,(label,icon) ->
+                listOf("首页" to Icons.Outlined.Home,"工作台" to Icons.Outlined.GridView,"发布" to Icons.Outlined.Add,
+                    "消息" to Icons.Outlined.NotificationsNone,"我的" to Icons.Outlined.PersonOutline).forEachIndexed { index,(label,icon) ->
+                    if(index==2) {
+                        Box(Modifier.weight(1f).height(54.dp),contentAlignment=Alignment.Center) {
+                            FilledIconButton(onClick={select(2)},modifier=Modifier.size(48.dp).testTag("publish"),shape=RoundedCornerShape(14.dp)) {
+                                Icon(Icons.Outlined.Add,"发布",Modifier.size(28.dp))
+                            }
+                        }
+                        return@forEachIndexed
+                    }
                     val active=selected==index
-                    Column(Modifier.weight(1f).heightIn(min=54.dp).clip(RoundedCornerShape(12.dp))
+                    Column(Modifier.weight(1f).heightIn(min=54.dp).testTag("nav-$index").clip(RoundedCornerShape(12.dp))
                         .selectable(active,role=Role.Tab,onClick={
                             if(!active && context.getSharedPreferences("student_feedback",0).getBoolean("enabled",true))
                                 view.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
@@ -154,7 +163,8 @@ fun IosToolGrid(tools: List<IosTool>, columns: Int=4, open: (String)->Unit) {
                     row.forEach { tool ->
                         Column(Modifier.weight(1f).heightIn(min=70.dp).clip(RoundedCornerShape(10.dp)).iosClick{open(tool.route)}.padding(horizontal=3.dp,vertical=10.dp),
                             horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(7.dp)) {
-                            Icon(tool.icon,null,Modifier.size(23.dp),tint=IosBlue)
+                            val tint=when(tool.route){"grades"->Color(0xFF16A36A);"calendar"->Color(0xFFEC5266);"interview"->Color(0xFF8061DB);"materials"->Color(0xFFE7A01B);"portfolio"->Color(0xFF65758A);else->IosBlue}
+                            IosIcon(tool.icon,tint,size=32)
                             Text(tool.title,fontSize=12.sp,lineHeight=17.sp,fontWeight=FontWeight.Medium,textAlign=androidx.compose.ui.text.style.TextAlign.Center)
                         }
                     }

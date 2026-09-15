@@ -9,6 +9,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import org.json.JSONArray
@@ -151,37 +152,37 @@ fun CatalogScreen(repo: StudentRepository, team: (String)->Unit, notices: (Strin
 }
 
 @Composable
-fun CommunityScreen(repo: StudentRepository, isTeam: Boolean) {
+fun CommunityScreen(repo: StudentRepository, isTeam: Boolean, composeOnly:Boolean=false, mineOnly:Boolean=false) {
     var list by remember(isTeam){mutableStateOf<List<JSONObject>>(emptyList())};var query by rememberSaveable(isTeam){mutableStateOf("")}
-    var selected by remember(isTeam){mutableStateOf<JSONObject?>(null)};var editor by remember{mutableStateOf(false)}
+    var selected by remember(isTeam){mutableStateOf<JSONObject?>(null)};var published by remember{mutableStateOf(false)}
     var mine by remember{mutableStateOf(false)};var contest by rememberSaveable{mutableStateOf(repo.context.getSharedPreferences("student_filters",0).getString("contest","")?:"")}
     val path=if(isTeam)"teams" else "posts"
     val scope=rememberCoroutineScope();var message by remember{mutableStateOf("")}
-    suspend fun refresh(){list=repo.api(if(isTeam&&mine)"teams/mine" else "$path?q=${java.net.URLEncoder.encode(query,"UTF-8")}&contest=${java.net.URLEncoder.encode(contest,"UTF-8")}").getJSONArray("items").objects()}
-    LaunchedEffect(isTeam){runCatching{refresh()}.onFailure{message=it.message?:"加载失败"}}
+    suspend fun refresh(){list=repo.api(if(!isTeam&&(mineOnly||mine))"posts?mine=true" else if(isTeam&&mine)"teams/mine" else "$path?q=${java.net.URLEncoder.encode(query,"UTF-8")}&contest=${java.net.URLEncoder.encode(contest,"UTF-8")}").getJSONArray("items").objects()}
+    LaunchedEffect(isTeam,query,contest,mine){kotlinx.coroutines.delay(350);runCatching{refresh()}.onSuccess{message=""}.onFailure{message=it.message?:"加载失败"}}
     if(selected!=null) {
         if(isTeam) TeamDetailScreen(repo,selected!!.getString("id")){selected=null}
         else PostDetailScreen(repo,selected!!){selected=null}
         return
     }
-    StudentPage(if(isTeam)"找队友" else "经验交流","真实学生发布 · 公开浏览，参与需要邮箱登录") {
-        OutlinedTextField(contest,{contest=it},label={Text("关联赛事，留空查看全部")},modifier=Modifier.fillMaxWidth())
-        OutlinedTextField(query,{query=it},label={Text("搜索")},modifier=Modifier.fillMaxWidth())
-        if(isTeam) Row{Checkbox(mine,{mine=it});Text("我的队伍与申请")}
-        OnlineAction("搜索 / 刷新"){refresh();"已刷新"}
-        Button(onClick={editor=true}){Text(if(isTeam)"发布招募" else "分享经验")}
-        if(message.isNotBlank())Text(message)
-        if(list.isEmpty())StudentCard("暂无相关内容","可以调整筛选条件，或分享你自己的真实经历。")
-        list.forEach{item->StudentCard(item.optString("title"),if(isTeam) "${item.optString("contest")}\n${item.optInt("members")}/${item.optInt("capacity")} 成员 · ${item.optInt("reserved")} 待确认 · ${item.optString("status")}" else "${item.optString("year")} · ${item.optString("contest")}\n${item.optString("body").take(130)}",{selected=item})}
-    }
-    if(editor) AlertDialog(onDismissRequest={editor=false},title={Text(if(isTeam)"发布招募" else "经验草稿")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)){
-        Text("提交后会公开以下填写内容，请勿填写成绩单、学号或私人联系方式。")
+    if(!composeOnly) CommunityReference(repo,isTeam,list.filter{!mineOnly || it.optString("owner")==repo.owner()},query,{query=it},contest,{contest=it},mine,{mine=it},message,
+        {scope.launch{runCatching{refresh()}.onSuccess{message=""}.onFailure{message=it.message?:"加载失败"}}},{selected=it})
+    if(composeOnly && !published) StudentPage("") {
+        Text("帖子公开可见，请勿填写成绩单、学号和私人联系方式。",fontSize=11.sp,color=IosMuted)
         val fields=if(isTeam)listOf("contest" to "赛事名称","title" to "招募标题","track" to "赛道","capacity" to "队伍总人数（包含队长）","roles" to "所需角色和能力","schedule" to "每周投入、比赛时间与现有进度","goal" to "参赛目标","location" to "线上或校区") else listOf("contest" to "赛事名称","title" to "经验标题","year" to "参赛年份","body" to "过程 / 分工 / 工具 / 坑点 / 真实结果")
         EditFields(fields,JSONObject().put("contest",contest).put("capacity","3").put("year","2026"),"确认并公开发布",draftKey="community-$path"){data->
-            if(isTeam)data.put("capacity",data.getString("capacity").toInt())
-            repo.api(path,"POST",data);editor=false;refresh()
+            require(data.optString("title").isNotBlank()){ "先写一个帖子标题" }
+            require(data.optString("contest").isNotBlank()){ "点击赛事标签，选择本帖对应的比赛" }
+            if(isTeam){
+                require(data.optString("track").isNotBlank()&&data.optString("roles").isNotBlank()&&data.optString("schedule").isNotBlank()){ "请补充招募正文、赛道和时间安排" }
+                val capacity=data.optString("capacity").toIntOrNull()
+                require(capacity!=null&&capacity in 2..30){ "队伍人数请填 2—30 人" };data.put("capacity",capacity)
+            }else require(data.optString("body").isNotBlank()){ "请写下要分享的经验" }
+            repo.api(path,"POST",data);published=true;message="已发布，同步显示在我的发布"
         }
-    }},confirmButton={},dismissButton={TextButton(onClick={editor=false}){Text("取消")}})
+        if(message.isNotBlank())Text(message,color=IosBlue)
+    }
+    if(composeOnly && published)StudentPage("发布成功","社区和「我的 → 我的发布」都能看到这篇帖子。") { Text("可以返回继续浏览，也可以通过底部 ＋ 开始下一次发布。") }
 }
 
 @Composable
@@ -234,10 +235,13 @@ fun TeamDetailScreen(repo: StudentRepository, id: String, back:()->Unit) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PostDetailScreen(repo: StudentRepository, post: JSONObject, back:()->Unit) {
     var comments by remember{mutableStateOf<List<JSONObject>>(emptyList())}
     var editing by remember{mutableStateOf(false)}
+    var composing by remember{mutableStateOf("")}
+    LaunchedEffect(post.optString("id")){runCatching{comments=repo.api("posts/${post.getString("id")}/comments").getJSONArray("items").objects()}}
     StudentPage(post.optString("title"),"${post.optString("year")} · ${post.optString("contest")}",back) {
         Text(post.optString("body"))
         if(post.optString("owner")==repo.owner()){
@@ -251,18 +255,22 @@ fun PostDetailScreen(repo: StudentRepository, post: JSONObject, back:()->Unit) {
         for((kind,label)in listOf("helpful" to "这篇对我有帮助","favorite" to "收藏经验"))OnlineAction(label){repo.api("posts/${post.getString("id")}/reaction","POST",JSONObject().put("kind",kind).put("enabled",true));"已保存"}
         OnlineAction("读取评论"){comments=repo.api("posts/${post.getString("id")}/comments").getJSONArray("items").objects();"已读取"}
         comments.forEach{StudentCard("同学的回复",it.optString("body"))}
-        EditFields(listOf("body" to "评论内容"),JSONObject(),"发表评论"){repo.api("posts/${post.getString("id")}/comments","POST",it);comments=repo.api("posts/${post.getString("id")}/comments").getJSONArray("items").objects()}
-        EditFields(listOf("reason" to "举报原因：过期、侵权或不当内容"),JSONObject(),"提交举报"){repo.api("reports","POST",it.put("target","post:${post.getString("id")}"))}
+        Row {TextButton(onClick={composing="comment"}){Text("写评论")};TextButton(onClick={composing="report"}){Text("举报内容")}}
     }
+    if(composing.isNotBlank())ModalBottomSheet(onDismissRequest={composing=""}){StudentPage(if(composing=="comment")"写评论" else "举报内容"){
+        if(composing=="comment")EditFields(listOf("body" to "分享你的看法"),JSONObject(),"发表评论"){repo.api("posts/${post.getString("id")}/comments","POST",it);comments=repo.api("posts/${post.getString("id")}/comments").getJSONArray("items").objects();composing=""}
+        else EditFields(listOf("reason" to "说明过期、侵权或不当内容的问题"),JSONObject(),"提交举报"){repo.api("reports","POST",it.put("target","post:${post.getString("id")}"));composing=""}
+    }}
 }
 
 @Composable
-fun InboxScreen(repo: StudentRepository, back:()->Unit) {
+fun InboxScreen(repo: StudentRepository, back:(()->Unit)?=null) {
     var messages by remember{mutableStateOf<List<JSONObject>>(emptyList())};var reports by remember{mutableStateOf<List<JSONObject>>(emptyList())};var blocks by remember{mutableStateOf<List<JSONObject>>(emptyList())}
     var team by remember{mutableStateOf("")};var post by remember{mutableStateOf<JSONObject?>(null)};var result by remember{mutableStateOf<JSONObject?>(null)}
     if(team.isNotBlank()){TeamDetailScreen(repo,team){team=""};return}
     if(post!=null){PostDetailScreen(repo,post!!){post=null};return}
-    StudentPage("消息与处理进度","不把每次点赞变成邮件；重要处理在这里查看",back) {
+    LaunchedEffect(Unit){runCatching{messages=repo.api("messages").getJSONArray("items").objects();reports=repo.api("reports").getJSONArray("items").objects();blocks=repo.api("blocks").getJSONArray("items").objects()}}
+    StudentPage("组队互动","不把每次点赞变成邮件；重要处理在这里查看",back) {
         OnlineAction("刷新消息与举报进度"){
             messages=repo.api("messages").getJSONArray("items").objects();reports=repo.api("reports").getJSONArray("items").objects();blocks=repo.api("blocks").getJSONArray("items").objects();"已刷新"
         }

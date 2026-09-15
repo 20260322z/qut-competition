@@ -3,6 +3,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
+RUN chmod -R a+rX /app/app
 ENV DATABASE_PATH=/data/notices.db PYTHONUNBUFFERED=1 TZ=Asia/Shanghai
 RUN useradd --uid 10001 --create-home app && mkdir -p /data && chown app:app /data
 USER app

@@ -42,6 +42,22 @@ def get(client,headers,key):
     return r.json()
 
 
+def test_grade_agent_persists_all_courses_and_remains_private(client,ai):
+    from app.grade_analysis import prepare
+    h=auth('grades-a');other=auth('grades-b')
+    text=json.dumps({'grades':[{'semester':'2025-3','course':'高等数学','credits':4,'score':80,'gpa':3,'status':'正常'},
+        {'semester':'2025-3','course':'英语','credits':2,'score':90,'gpa':4,'status':'正常'}]})
+    key,_=create(client,h,kind='grades',text=text)
+    agents.tick()
+    ai.append({'courses':[{'id':g['id'],'assessment':'结合原始成绩核对','actions':['复盘作业和错题'],'check':'自测薄弱内容'} for g in prepare(text)['grades']]})
+    agents.tick();agents.tick()
+    r=get(client,h,key)
+    assert r['status']=='completed' and len(r['output']['courses'])==2
+    assert r['output']['calculation']['gpa']==pytest.approx(20/6)
+    assert client.get('/api/v1/student/agents/runs?kind=grades',headers=h).json()['items'][0]['id']==key
+    assert client.get('/api/v1/student/agents/runs/'+key,headers=other).status_code==404
+
+
 def test_resume_durable_steps_wait_audit_delivery(client,ai):
     headers=auth();key,body=create(client,headers)
     agents.tick();assert get(client,headers,key)['stage']==1

@@ -44,11 +44,13 @@ fun number(value: Double?) = value?.let { String.format(Locale.CHINA,"%.2f",it) 
 fun StudentPage(title: String, subtitle: String = "", back: (() -> Unit)? = null, content: @Composable ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=16.dp), verticalArrangement=Arrangement.spacedBy(9.dp)) {
         Spacer(Modifier.height(if(back==null) 3.dp else 0.dp))
-        if (back != null) IconButton(onClick=back,modifier=Modifier.offset(x=(-12).dp)) { Icon(Icons.AutoMirrored.Outlined.ArrowBack,"返回",tint=IosBlue) }
-        Column(verticalArrangement=Arrangement.spacedBy(3.dp)) {
-            if(title.isNotBlank())Text(title,fontSize=if(back==null)26.sp else 23.sp,lineHeight=32.sp,fontWeight=FontWeight.Bold,color=IosInk)
-            if(subtitle.isNotBlank()) Text(subtitle,fontSize=12.sp,lineHeight=17.sp,color=IosMuted)
-        }
+        if(title.isNotBlank() || back!=null) Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+            if(back!=null)IconButton(onClick=back,modifier=Modifier.size(48.dp)){Icon(Icons.AutoMirrored.Outlined.ArrowBack,"返回",tint=IosBlue)}
+            Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(2.dp)) {
+                if(title.isNotBlank())Text(title,fontSize=23.sp,lineHeight=29.sp,fontWeight=FontWeight.Bold,color=IosInk)
+                if(subtitle.isNotBlank())Text(subtitle,fontSize=12.sp,lineHeight=17.sp,color=IosMuted)
+            }
+        } else if(subtitle.isNotBlank())Text(subtitle,fontSize=12.sp,color=IosMuted)
         content()
         Spacer(Modifier.height(16.dp))
     }
@@ -72,21 +74,22 @@ fun StudentCard(title: String, text: String, onClick: (() -> Unit)? = null, acti
 @Composable
 fun StudentTabs(labels: List<String>, selected: Int, change: (Int)->Unit) {
     val scrollable=labels.size>4
-    Row(Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=4.dp).then(if(scrollable)Modifier.horizontalScroll(rememberScrollState()) else Modifier)
-        .background(Color(0xFFE6E6EB),RoundedCornerShape(12.dp)).padding(3.dp),horizontalArrangement=Arrangement.spacedBy(3.dp)) {
+    Row(Modifier.fillMaxWidth().background(Color.White).then(if(scrollable)Modifier.horizontalScroll(rememberScrollState()) else Modifier).padding(horizontal=8.dp)) {
         labels.forEachIndexed { i,label ->
-            Surface(onClick={change(i)},modifier=if(scrollable)Modifier else Modifier.weight(1f),shape=RoundedCornerShape(9.dp),color=if(selected==i)Color.White else Color.Transparent,
-                shadowElevation=if(selected==i)1.dp else 0.dp) {
-                Box(Modifier.heightIn(min=48.dp).padding(horizontal=if(scrollable)14.dp else 8.dp,vertical=10.dp),contentAlignment=Alignment.Center) {
-                    Text(label,fontSize=13.sp,fontWeight=if(selected==i)FontWeight.SemiBold else FontWeight.Normal,color=if(selected==i)IosInk else IosMuted)
+            Column((if(scrollable)Modifier.widthIn(min=72.dp) else Modifier.weight(1f)).iosClick{change(i)},horizontalAlignment=Alignment.CenterHorizontally) {
+                Box(Modifier.heightIn(min=48.dp).padding(horizontal=6.dp,vertical=12.dp),contentAlignment=Alignment.Center) {
+                    Text(label,fontSize=13.sp,maxLines=1,fontWeight=if(selected==i)FontWeight.SemiBold else FontWeight.Normal,color=if(selected==i)IosBlue else IosMuted)
                 }
+                Box(Modifier.width(24.dp).height(3.dp).background(if(selected==i)IosBlue else Color.Transparent,RoundedCornerShape(2.dp)))
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StudentWorkspace(tab: Int, notices: List<NoticeItem>, settings: Settings, openNotice: (NoticeItem)->Unit,
+                     publishing: Boolean, dismissPublish: ()->Unit, navigate: (Int)->Unit,
                      searchNotices: (String)->Unit,
                      feed: @Composable ()->Unit, assessment: @Composable ()->Unit, favorites: @Composable ()->Unit,
                      schedule: @Composable ()->Unit, preferences: @Composable ()->Unit) {
@@ -96,7 +99,22 @@ fun StudentWorkspace(tab: Int, notices: List<NoticeItem>, settings: Settings, op
     var route by rememberSaveable(tab) { mutableStateOf("") }
     var section by rememberSaveable(tab) { mutableIntStateOf(0) }
     BackHandler(route.isNotEmpty()) { route="" }
+    if(publishing) ModalBottomSheet(onDismissRequest=dismissPublish) {
+        PublishPanel(records) { destination -> dismissPublish(); route=destination }
+    }
+    if(route.startsWith("agent_grades/")){
+        AcademicDashboard(repository,records,{route="agents"},{route="assessment"},initialRun=route.substringAfter('/'));return
+    }
     when(route) {
+        "assessment" -> Column(Modifier.fillMaxSize()) { CompactBack("综测系统"){route=""}; Box(Modifier.weight(1f)){assessment()} }
+        "grades", "agent_grades" -> AcademicDashboard(repository,records,{route=""},{route="assessment"})
+        "admission" -> AdmissionHub(records,{route=it}){route=""}
+        "portfolio" -> Column { RecordScreen(repository,records,"portfolio","成长档案",listOf("title" to "经历名称","type" to "竞赛 / 项目 / 证书 / 实践","date" to "发生日期 YYYY-MM-DD","role" to "本人职责","result" to "真实成果","evidence" to "证明文件","note" to "具体贡献")){route=""} }
+        "publish_team", "publish_post" -> Column { CompactBack(if(route=="publish_team")"发布招募" else "分享经验"){route=""}; CommunityScreen(repository,route=="publish_team",composeOnly=true) }
+        "publish_resource" -> ResourceScreen(repository,false,{route=""},uploadOnly=true)
+        "drafts" -> DraftList(records,{route=it}){route=""}
+        "history" -> StudentPage("浏览记录",back={route=""}) { notices.filter{it.state.read}.take(100).forEach { n -> StudentCard(n.notice.title,n.notice.source,{openNotice(n)}) }; if(notices.none{it.state.read})Text("看过的通知会保存在这里") }
+        "my_posts" -> MyPublications(repository){route=""}
         "profile" -> ProfileScreen(repository,records) { route="" }
         "tasks" -> RecordScreen(repository,records,"task","统一待办",listOf("title" to "任务名称","due" to "日期 YYYY-MM-DD","source" to "来源：自定 / 竞赛 / 升学","note" to "具体要做什么")) { route="" }
         "calendar" -> UnifiedCalendarScreen(records,notices,openNotice,{route="tasks"}) { route="" }
@@ -119,21 +137,13 @@ fun StudentWorkspace(tab: Int, notices: List<NoticeItem>, settings: Settings, op
         "targets" -> TargetsScreen(repository,records) { route="" }
         "applications" -> RecordScreen(repository,records,"application","申请进度",listOf("title" to "学校 / 项目 / 批次","due" to "截止日期 YYYY-MM-DD","status" to "准备中 / 已提交 / 等待 / 面试 / 结束","materials" to "材料清单与文件版本","url" to "官方来源网址","note" to "待补事项")) { route="" }
         else -> when(tab) {
-            0 -> IosHome(records,notices,{route=it},openNotice)
-            1 -> Column {
-                StudentTabs(listOf("成绩","综测","成长档案"),section){section=it}
-                when(section) {
-                    0 -> Column { TextButton(onClick={route="agent_study"}){Text("分析课程并制定学习计划")}; GradesScreen(repository,records) }
-                    1 -> assessment()
-                    else -> RecordScreen(repository,records,"portfolio","成长档案",listOf("title" to "经历名称","type" to "竞赛 / 项目 / 证书 / 实践","date" to "发生日期 YYYY-MM-DD","role" to "本人职责","result" to "成果（仅填写真实内容）","evidence" to "证明文件名称与版本","note" to "具体贡献与过程"))
-                }
+            0 -> Column(Modifier.fillMaxSize()) {
+                StudentTabs(listOf("竞赛通知","找队友","经验交流"),section){section=it}
+                Box(Modifier.weight(1f)) { when(section) { 0->feed(); else->CommunityScreen(repository,section==1) } }
             }
-            2 -> Column {
-                StudentTabs(listOf("通知","竞赛目录","找队友","经验交流"),section){section=it}
-                when(section) { 0 -> feed(); 1 -> ContestWorkspace(repository); else -> CommunityScreen(repository,section==2) }
-            }
-            3 -> IosAdmission(records){route=it}
-            4 -> IosProfile(repository,records){route=it}
+            1 -> WorkbenchHome(repository,records){route=it}
+            3 -> MessageHub(repository,records,notices,openNotice,{route=it})
+            4 -> PersonalHome(repository,records,notices){route=it}
         }
     }
 }
@@ -153,7 +163,7 @@ fun EditFields(fields: List<Pair<String,String>>, initial: JSONObject, button: S
     val scope=rememberCoroutineScope(); val view=LocalView.current; val context=LocalContext.current
     val draftRepo=remember{context.students()}
     LaunchedEffect(draftKey){if(draftKey.isNotBlank())draftRepo.dao.get("draft",draftKey)?.data()?.let{saved->values=fields.associate{it.first to saved.optString(it.first)}}}
-    fields.forEach{(key,label)->OutlinedTextField(values[key]?:"",{values=values+(key to it)},label={Text(label)},modifier=Modifier.fillMaxWidth(),minLines=if(key in listOf("note","body","text","materials","requirements")) 3 else 1)}
+    UnifiedDraftEditor(fields,values){values=it}
     if(message.isNotBlank()) Text(message,color=MaterialTheme.colorScheme.primary)
     Button(enabled=!busy,onClick={scope.launch {
         busy=true
@@ -170,6 +180,7 @@ fun EditFields(fields: List<Pair<String,String>>, initial: JSONObject, button: S
     if(draftKey.isNotBlank())OutlinedButton(enabled=!busy,onClick={scope.launch{val data=JSONObject(initial.toString());values.forEach{(k,v)->data.put(k,v)};draftRepo.save("draft",data,draftKey);message="草稿已保存在本机，下次打开会恢复"}}){Text("仅保存本机草稿")}
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecordScreen(repo: StudentRepository, all: List<StudentRecord>, kind: String, title: String, fields: List<Pair<String,String>>, back: (()->Unit)?=null) {
     var editing by remember { mutableStateOf<StudentRecord?>(null) }; var adding by remember { mutableStateOf(false) }
@@ -180,6 +191,14 @@ fun RecordScreen(repo: StudentRepository, all: List<StudentRecord>, kind: String
         val records=all.filter{it.kind==kind}.let{ if(kind=="task") it.sortedWith(compareBy({r->r.data().optBoolean("done")},{r->r.data().optString("due","9999")})) else it }
         if(records.isEmpty()) StudentCard("还没有记录","点击添加，从一件具体的事情开始。")
         records.forEach{record -> val j=record.data()
+            if(kind=="task") Surface(color=Color.White,shape=RoundedCornerShape(15.dp),onClick={editing=record}) {
+                Row(Modifier.fillMaxWidth().padding(10.dp),verticalAlignment=Alignment.CenterVertically) {
+                    Checkbox(j.optBoolean("done"),{done->scope.launch{repo.save(kind,j.put("done",done),record.id)}})
+                    Column(Modifier.weight(1f)) {Text(j.optString("title"),fontSize=15.sp);if(j.optString("note").isNotBlank())Text(j.optString("note"),fontSize=11.sp,color=IosMuted,maxLines=2)}
+                    Text(j.optString("due").let{if(it==LocalDate.now().toString())"今天" else it.takeLast(5)},fontSize=12.sp,color=IosBlue)
+                    IconButton(onClick={deleting=record}){Icon(Icons.Outlined.Close,"删除待办",Modifier.size(17.dp),tint=IosMuted)}
+                }
+            } else {
             StudentCard(j.optString("title"),fields.drop(1).mapNotNull{(k,label)->j.optString(k).takeIf{it.isNotBlank()}?.let{"${label.substringBefore(' ')}：$it"}}.joinToString("\n"),actions={
                 Row(Modifier.horizontalScroll(rememberScrollState())) {
                     if(kind=="task") TextButton(onClick={scope.launch{repo.save(kind,j.put("done",!j.optBoolean("done")),record.id)}}){Text(if(j.optBoolean("done"))"已完成 · 撤回" else "完成任务")}
@@ -187,14 +206,16 @@ fun RecordScreen(repo: StudentRepository, all: List<StudentRecord>, kind: String
                     if(j.optString("url").isNotBlank())StudentLink("官方来源",j.optString("url"))
                 }
             })
+            }
         }
         TextExportButton(title,records.joinToString("\n\n"){r->fields.joinToString("\n"){(k,label)->"$label：${r.data().optString(k)}"}})
     }
-    if(adding||editing!=null) AlertDialog(onDismissRequest={adding=false;editing=null},title={Text("编辑${title}")},text={
-        Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-            EditFields(fields,editing?.data()?:JSONObject(),draftKey="record-$kind-${editing?.id?:"new"}") { data-> repo.save(kind,data,editing?.id?:UUID.randomUUID().toString());adding=false;editing=null }
+    if(adding||editing!=null) ModalBottomSheet(onDismissRequest={adding=false;editing=null},sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true)) {
+        Column(Modifier.fillMaxWidth().heightIn(max=620.dp).verticalScroll(rememberScrollState()).imePadding().padding(18.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+            Text(if(kind=="task")if(editing==null)"添加待办" else "编辑待办" else if(editing==null)"添加${title}" else "编辑${title}",fontSize=19.sp,fontWeight=FontWeight.Bold)
+            EditFields(fields,editing?.data()?:JSONObject().apply{if(kind=="task")put("due",LocalDate.now().toString())},draftKey="record-$kind-${editing?.id?:"new"}") { data-> repo.save(kind,data,editing?.id?:UUID.randomUUID().toString());adding=false;editing=null }
         }
-    },confirmButton={},dismissButton={TextButton(onClick={adding=false;editing=null}){Text("取消")}})
+    }
     deleting?.let{record-> AlertDialog(onDismissRequest={deleting=null},title={Text("删除这条记录？")},text={Text("删除本机记录不会删除已导出的文件。")},confirmButton={TextButton(onClick={scope.launch{repo.dao.delete(kind,record.id);deleting=null}}){Text("删除")}},dismissButton={TextButton(onClick={deleting=null}){Text("保留")}}) }
 }
 
